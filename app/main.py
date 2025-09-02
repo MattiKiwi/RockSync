@@ -2,6 +2,12 @@ import os
 import sys
 import shlex
 import json
+import logging
+import logging.handlers
+import uuid
+import warnings
+import io
+import traceback
 import threading
 import subprocess
 import shutil
@@ -22,6 +28,7 @@ DEFAULT_SETTINGS = {
     "jobs": os.cpu_count() or 4,
     "genius_token": "",
     "lastfm_key": "",
+    "debug": False,
 }
 
 def load_settings():
@@ -187,6 +194,9 @@ class App(tk.Tk):
         self.proc = None
         self.proc_thread = None
         self.settings = load_settings()
+        # Session + Logging
+        self.session_id = str(uuid.uuid4())[:8]
+        self._configure_logging()
 
         self._build_ui()
 
@@ -268,6 +278,239 @@ class App(tk.Tk):
 
         self.task_list.selection_set(0)
         self.on_task_select()
+
+    def _select_tasks_tab(self):
+        """Robustly switch to the Tasks tab across Tk variants."""
+        # 1) Try selecting directly by widget
+        try:
+            self.logger.debug("Selecting Tasks tab by widget")
+            self.tabs.select(self.run_tab)
+            return True
+        except Exception as e:
+            self.logger.warning("Select by widget failed: %s", e)
+
+        # 2) Resolve tab id from run_tab widget
+        try:
+            tabs = self.tabs.tabs()
+            for tid in tabs:
+                w = self.tabs.nametowidget(tid)
+                if w is self.run_tab:
+                    self.logger.debug("Selecting Tasks tab by tab id: %s", tid)
+                    self.tabs.select(tid)
+                    return True
+        except Exception as e:
+            self.logger.warning("Select by tab id failed: %s", e)
+
+        # 3) Fallback by title text
+        try:
+            tabs = self.tabs.tabs()
+            for tid in tabs:
+                if self.tabs.tab(tid, 'text') == 'Tasks':
+                    self.logger.debug("Selecting Tasks tab by title")
+                    self.tabs.select(tid)
+                    return True
+        except Exception as e:
+            self.logger.warning("Select by title failed: %s", e)
+
+        # 4) Final fallback: first tab
+        try:
+            tabs = self.tabs.tabs()
+            if tabs:
+                self.logger.debug("Selecting first tab as fallback: %s", tabs[0])
+                self.tabs.select(tabs[0])
+                return True
+        except Exception as e:
+            self.logger.error("Failed to select any tab: %s", e)
+        return False
+
+    def _configure_logging(self):
+        log_level = logging.DEBUG if self.settings.get("debug") else logging.INFO
+
+        # Root logger setup (capture everything)
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)  # capture all
+        for h in list(root_logger.handlers):
+            try:
+                root_logger.removeHandler(h)
+                h.close()
+            except Exception:
+                pass
+
+        class SessionFilter(logging.Filter):
+            def __init__(self, session):
+                super().__init__()
+                self.session = session
+            def filter(self, record):
+                record.session = self.session
+                return True
+
+        sess_filter = SessionFilter(self.session_id)
+
+        # Formatters
+        console_fmt = logging.Formatter("[%(levelname)s] %(message)s")
+        file_fmt = logging.Formatter("%(asctime)s [%(levelname)s] [%(name)s] %(module)s:%(lineno)d | %(message)s | session=%(session)s")
+
+        # Handlers
+        try:
+            # Console
+            sh = logging.StreamHandler(sys.stdout)
+            sh.setLevel(log_level)
+            sh.setFormatter(console_fmt)
+            sh.addFilter(sess_filter)
+            root_logger.addHandler(sh)
+
+            # latest.log (overwritten each run)
+            latest_path = ROOT / "app" / "latest.log"
+            latest_path.parent.mkdir(parents=True, exist_ok=True)
+            lh = logging.FileHandler(latest_path, mode='w', encoding='utf-8')
+            lh.setLevel(logging.DEBUG)
+            lh.setFormatter(file_fmt)
+            lh.addFilter(sess_filter)
+            root_logger.addHandler(lh)
+
+            # debug.log (rotating history)
+            debug_path = ROOT / "app" / "debug.log"
+            rh = logging.handlers.RotatingFileHandler(debug_path, maxBytes=1_000_000, backupCount=5, encoding='utf-8')
+            rh.setLevel(logging.DEBUG)
+            rh.setFormatter(file_fmt)
+            rh.addFilter(sess_filter)
+            root_logger.addHandler(rh)
+            # ui_state.log captures detailed UI state snapshots
+            ui_state_path = ROOT / "app" / "ui_state.log"
+            uh = logging.FileHandler(ui_state_path, mode='w', encoding='utf-8')
+            uh.setLevel(logging.DEBUG)
+            uh.setFormatter(file_fmt)
+            uh.addFilter(sess_filter)
+            logging.getLogger("RockSyncGUI.UI").addHandler(uh)
+            logging.getLogger("RockSyncGUI.UI").setLevel(logging.DEBUG)
+        except Exception:
+            pass
+
+        # App logger (for convenience)
+        self.logger = logging.getLogger("RockSyncGUI")
+        self.logger.setLevel(log_level)
+
+        # Capture Python warnings
+        try:
+            warnings.captureWarnings(True)
+        except Exception:
+            pass
+
+        # Redirect stdout/stderr into logging
+        class StreamToLogger(io.TextIOBase):
+            def __init__(self, logger, level):
+                self.logger = logger
+                self.level = level
+                self._buf = ""
+            def write(self, b):
+                try:
+                    s = str(b)
+                except Exception:
+                    s = b.decode('utf-8', errors='ignore')
+                self._buf += s
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    if line.strip():
+                        self.logger.log(self.level, line)
+                return len(b) if hasattr(b, '__len__') else 0
+            def flush(self):
+                if self._buf.strip():
+                    self.logger.log(self.level, self._buf.strip())
+                self._buf = ""
+
+        try:
+            sys.stdout = StreamToLogger(logging.getLogger("stdout"), logging.INFO)
+            sys.stderr = StreamToLogger(logging.getLogger("stderr"), logging.ERROR)
+        except Exception:
+            pass
+
+        # Log unhandled exceptions
+        def excepthook(exc_type, exc_value, exc_tb):
+            self.logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+        sys.excepthook = excepthook
+
+        self.logger.log(log_level, "Logger initialized | debug=%s | session=%s", self.settings.get("debug"), self.session_id)
+
+    def log(self, level, event, **data):
+        try:
+            payload = json.dumps(data, ensure_ascii=False, default=str)
+        except Exception:
+            payload = str(data)
+        self.logger.log(level, f"event={event} data={payload}")
+
+    # --- UI State Snapshot ---
+    def ui_state(self, event, **extra):
+        try:
+            st = {
+                'event': event,
+                'session': self.session_id,
+            }
+            # Tabs
+            try:
+                cur_tab = self.tabs.select()
+                st['active_tab'] = self.tabs.tab(cur_tab, 'text')
+            except Exception:
+                st['active_tab'] = None
+            # Task selection
+            try:
+                idxs = self.task_list.curselection()
+                st['task_index'] = (idxs[0] if idxs else None)
+                st['task_label'] = (self.task_list.get(idxs[0]) if idxs else None)
+            except Exception:
+                st['task_index'] = st['task_label'] = None
+            # Form values
+            try:
+                vals = {}
+                for k, w in self.form_widgets.items():
+                    v = None
+                    try:
+                        if hasattr(w, 'entry'):
+                            v = w.entry.get()
+                        elif hasattr(w, 'var'):
+                            v = w.var.get()
+                        else:
+                            v = w.get()
+                    except Exception:
+                        v = None
+                    vals[k] = v
+                st['form_values'] = vals
+            except Exception:
+                st['form_values'] = None
+            # Explorer
+            try:
+                st['explorer_path'] = self.explorer_path.get()
+                sel = self.explorer_list.focus()
+                st['explorer_focus'] = self.explorer_list.item(sel, 'values') if sel else None
+            except Exception:
+                st['explorer_path'] = st['explorer_focus'] = None
+            # Tracks
+            try:
+                st['tracks_path'] = self.tracks_path.get()
+                st['tracks_count'] = len(self.tracks_tree.get_children())
+            except Exception:
+                st['tracks_path'] = None
+            # Settings subset
+            st['settings'] = {
+                'music_root': self.settings.get('music_root'),
+                'lyrics_subdir': self.settings.get('lyrics_subdir'),
+                'lyrics_ext': self.settings.get('lyrics_ext'),
+                'cover_size': self.settings.get('cover_size'),
+                'cover_max': self.settings.get('cover_max'),
+                'jobs': self.settings.get('jobs'),
+                'debug': self.settings.get('debug'),
+            }
+            # Process state
+            st['proc_running'] = (self.proc is not None and getattr(self.proc, 'poll', lambda: 0)() is None)
+            # Extra data
+            if extra:
+                st.update(extra)
+            payload = json.dumps(st, ensure_ascii=False, default=str)
+            logging.getLogger("RockSyncGUI.UI").info(payload)
+        except Exception:
+            try:
+                logging.getLogger("RockSyncGUI.UI").exception("snapshot_failed")
+            except Exception:
+                pass
 
     def _build_explorer_tab(self, parent):
         # Layout: top bar, main split (list on left, detail on right)
@@ -398,6 +641,11 @@ class App(tk.Tk):
         self.set_lastfm.insert(0, self.settings.get("lastfm_key", ""))
         add_row("Last.fm API key", self.set_lastfm)
 
+        # Debug toggle
+        self.debug_var = tk.BooleanVar(value=bool(self.settings.get("debug", False)))
+        dbg_cb = ttk.Checkbutton(parent, text="Enable verbose debug logging (writes to app/debug.log)", variable=self.debug_var)
+        add_row("Debug", dbg_cb)
+
         # Save
         btns = ttk.Frame(parent)
         save_btn = ttk.Button(btns, text="Save Settings", command=self.on_save_settings)
@@ -416,6 +664,7 @@ class App(tk.Tk):
             return
         idx = idxs[0]
         task = TASKS[idx]
+        self.ui_state('on_task_select', idx=idx, label=task.get('label'))
         self.populate_form(task)
 
     def default_value_for_spec(self, spec):
@@ -531,7 +780,9 @@ class App(tk.Tk):
                 parts.append(shlex.quote(str(val)))
             else:
                 parts.extend([spec["key"], shlex.quote(str(val))])
-        return " ".join(parts)
+        cmd = " ".join(parts)
+        self.ui_state('build_cmd', cmd=cmd, task=task.get('label'))
+        return cmd
 
     def append_output(self, text):
         self.output.insert("end", text)
@@ -543,6 +794,7 @@ class App(tk.Tk):
             messagebox.showwarning("No task", "Please select a task")
             return
         task = TASKS[idxs[0]]
+        self.ui_state('run_task_start', task=task.get('label'))
 
         # Quick deps check
         missing = []
@@ -567,11 +819,19 @@ class App(tk.Tk):
                 self.proc = subprocess.Popen(cmd, shell=True, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
                 for line in self.proc.stdout:
                     self.append_output(line)
+                    try:
+                        self.logger.info("[proc] %s", line.rstrip())
+                    except Exception:
+                        pass
                 self.proc.wait()
                 rc = self.proc.returncode
                 self.append_output(f"\n[Exit {rc}]\n")
+                self.logger.info("Process exited | rc=%s", rc)
+                self.ui_state('run_task_end', rc=rc)
             except Exception as e:
                 self.append_output(f"\n[Error] {e}\n")
+                self.logger.exception("Process error")
+                self.ui_state('run_task_error', error=str(e))
             finally:
                 self.proc = None
                 self.run_btn.configure(state="normal")
@@ -584,6 +844,7 @@ class App(tk.Tk):
             try:
                 self.proc.terminate()
                 self.append_output("\n[Terminated]\n")
+                self.ui_state('stop_task')
             except Exception as e:
                 self.append_output(f"\n[Error stopping] {e}\n")
 
@@ -597,11 +858,15 @@ class App(tk.Tk):
         self.settings["jobs"] = int(self.set_jobs.get())
         self.settings["genius_token"] = self.set_genius.get()
         self.settings["lastfm_key"] = self.set_lastfm.get()
+        self.settings["debug"] = bool(self.debug_var.get())
         if save_settings(self.settings):
             self.status.set(f"Music root: {self.settings.get('music_root')}")
             messagebox.showinfo("Settings", "Settings saved.")
             # refresh defaults in form
             self.on_task_select()
+            # Reconfigure logging live
+            self._configure_logging()
+            self.ui_state('settings_saved')
 
     def on_reload_settings(self):
         self.settings = load_settings()
@@ -613,7 +878,10 @@ class App(tk.Tk):
         self.set_jobs.set(int(self.settings.get('jobs', os.cpu_count() or 4)))
         self.set_genius.delete(0, 'end'); self.set_genius.insert(0, self.settings.get('genius_token', ''))
         self.set_lastfm.delete(0, 'end'); self.set_lastfm.insert(0, self.settings.get('lastfm_key', ''))
+        self.debug_var.set(bool(self.settings.get('debug', False)))
         self.status.set(f"Music root: {self.settings.get('music_root')}")
+        self._configure_logging()
+        self.ui_state('settings_reloaded')
 
     # Explorer actions
     def scan_library(self):
@@ -814,7 +1082,10 @@ class App(tk.Tk):
             return
         base = self.explorer_path.get().strip()
         folder_path = os.path.join(base, name)
+        self.logger.debug("Explorer actions click: row=%s col=%s path=%s", row_id, col_id, folder_path)
         self._show_folder_menu(folder_path, event)
+        self.ui_state('explorer_actions_click', folder_path=folder_path)
+        return 'break'
 
     def explorer_on_right_click(self, event):
         row_id = self.explorer_list.identify_row(event.y)
@@ -828,9 +1099,12 @@ class App(tk.Tk):
             return
         base = self.explorer_path.get().strip()
         folder_path = os.path.join(base, name)
+        self.logger.debug("Explorer right click: row=%s path=%s", row_id, folder_path)
         self._show_folder_menu(folder_path, event)
+        self.ui_state('explorer_right_click', folder_path=folder_path)
 
     def _show_folder_menu(self, folder_path, event):
+        self.logger.debug("Show folder menu for: %s", folder_path)
         # Destroy any existing context menu
         if getattr(self, "_ctx_menu", None):
             try:
@@ -849,10 +1123,13 @@ class App(tk.Tk):
             menu.add_command(label="No folder tasks found", state='disabled')
         # Keep reference for dismissal and teardown
         self._ctx_menu = menu
-        # Global dismiss bindings
-        self.bind_all("<Button-1>", self._dismiss_context_menu, add="+")
-        self.bind_all("<Button-3>", self._dismiss_context_menu, add="+")
+        # Only bind Escape to dismiss to avoid stealing the click that should activate menu items
         self.bind_all("<Escape>", self._dismiss_context_menu, add="+")
+        # When the menu unposts (user clicked elsewhere or selected), clean up handler and state
+        try:
+            menu.bind("<Unmap>", lambda e: self._destroy_ctx_menu())
+        except Exception:
+            pass
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -860,6 +1137,7 @@ class App(tk.Tk):
                 menu.grab_release()
             except Exception:
                 pass
+        self.ui_state('context_menu_opened', folder_path=folder_path)
 
     def _dismiss_context_menu(self, event=None):
         # Delay unpost slightly to let menu commands fire first
@@ -886,6 +1164,13 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    # Tkinter callback exception hook -> log file
+    def report_callback_exception(self, exc, val, tb):
+        try:
+            self.logger.error("Tk callback exception", exc_info=(exc, val, tb))
+        except Exception:
+            pass
+
     def _task_accepts_folder(self, task):
         folder_keys = {"--folder", "--root", "--source", "--base-dir", "base", "source", "--music-dir"}
         for spec in task.get('args', []):
@@ -894,30 +1179,164 @@ class App(tk.Tk):
         return False
 
     def _open_task_with_folder(self, task, folder_path):
-        # Switch to Tasks tab and select task
+        # Close menu if visible
+        self._destroy_ctx_menu()
+        self.logger.debug("Quick task dialog for folder: %s | task=%s", folder_path, task.get('label'))
+        self.ui_state('quick_task_open', folder_path=folder_path, task=task.get('label'))
+
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Quick Task: {task.get('label')}")
+        dlg.transient(self)
         try:
-            idx = [t["label"] for t in TASKS].index(task["label"])
-        except ValueError:
-            return
-        self.tabs.select(self.run_tab)
-        self.task_list.selection_clear(0, 'end')
-        self.task_list.selection_set(idx)
-        self.task_list.activate(idx)
-        self.on_task_select()
-        # Prefill path-like arguments
+            dlg.grab_set()
+        except Exception:
+            pass
+        dlg.columnconfigure(1, weight=1)
+
+        row = 0
+        # Deps warning
+        missing = []
+        for mod in task.get("py_deps", []):
+            try:
+                __import__(mod)
+            except Exception:
+                missing.append(f"python:{mod}")
+        for bin_name in task.get("bin_deps", []):
+            if not cmd_exists(bin_name):
+                missing.append(f"bin:{bin_name}")
+        if missing:
+            ttk.Label(dlg, text=f"Missing deps: {', '.join(missing)}", foreground="#b00").grid(row=row, column=0, columnspan=2, sticky='w', padx=8, pady=(8,4))
+            row += 1
+
+        ttk.Label(dlg, text=f"Folder: {folder_path}").grid(row=row, column=0, columnspan=2, sticky='w', padx=8)
+        row += 1
+
+        quick_widgets = {}
         folder_keys = {"--folder", "--root", "--source", "--base-dir", "base", "source", "--music-dir"}
+
+        def add_row(label, widget):
+            nonlocal row
+            ttk.Label(dlg, text=label).grid(row=row, column=0, sticky='w', padx=8, pady=4)
+            widget.grid(row=row, column=1, sticky='ew', padx=8, pady=4)
+            row += 1
+
+        for spec in task.get('args', []):
+            label = spec.get('label')
+            key = spec.get('key')
+            typ = spec.get('type')
+            default_val = self.default_value_for_spec(spec)
+            if key in folder_keys:
+                default_val = folder_path
+            w = None
+            if typ in ('text', 'password'):
+                w = ttk.Entry(dlg)
+                if typ == 'password':
+                    w.configure(show='*')
+                w.insert(0, str(default_val))
+            elif typ == 'int':
+                w = ttk.Spinbox(dlg, from_=1, to=4096)
+                w.set(int(default_val) if str(default_val).isdigit() else 1)
+            elif typ == 'bool':
+                var = tk.BooleanVar(value=bool(default_val))
+                w = ttk.Checkbutton(dlg, variable=var)
+                w.var = var
+            elif typ == 'path':
+                frame = ttk.Frame(dlg)
+                entry = ttk.Entry(frame)
+                entry.insert(0, str(default_val))
+                entry.pack(side='left', fill='x', expand=True)
+                ttk.Button(frame, text='Browse', command=lambda e=entry: self.browse_dir(e)).pack(side='left', padx=4)
+                w = frame
+                w.entry = entry
+            elif typ == 'file':
+                frame = ttk.Frame(dlg)
+                entry = ttk.Entry(frame)
+                entry.insert(0, str(default_val))
+                entry.pack(side='left', fill='x', expand=True)
+                ttk.Button(frame, text='Browse', command=lambda e=entry: self.browse_file(e)).pack(side='left', padx=4)
+                w = frame
+                w.entry = entry
+            elif typ == 'choice':
+                w = ttk.Combobox(dlg, values=spec.get('choices', []))
+                w.set(default_val)
+            else:
+                w = ttk.Entry(dlg)
+                w.insert(0, str(default_val))
+            add_row(label, w)
+            quick_widgets[key] = w
+
+        # Close on run toggle
+        close_var = tk.BooleanVar(value=True)
+        add_row('Close this window on Run', ttk.Checkbutton(dlg, variable=close_var))
+
+        # Buttons
+        btns = ttk.Frame(dlg)
+        btns.grid(row=row, column=0, columnspan=2, sticky='e', padx=8, pady=8)
+        def do_run():
+            values = {}
+            for spec in task.get('args', []):
+                key = spec.get('key')
+                w = quick_widgets.get(key)
+                if w is None:
+                    continue
+                if spec.get('type') == 'bool':
+                    values[key] = bool(getattr(w, 'var', tk.BooleanVar(value=False)).get())
+                elif spec.get('type') in ('path','file'):
+                    values[key] = w.entry.get()
+                else:
+                    try:
+                        values[key] = w.get()
+                    except Exception:
+                        values[key] = ''
+            cmd = self._build_cmd_with_values(task, values)
+            self.append_output(f"\n$ {cmd}\n")
+            self.ui_state('quick_task_run', task=task.get('label'), folder_path=folder_path, cmd=cmd)
+            self._run_command(cmd)
+            if close_var.get():
+                dlg.destroy()
+        ttk.Button(btns, text='Run', command=do_run).pack(side='right')
+        ttk.Button(btns, text='Cancel', command=dlg.destroy).pack(side='right', padx=(0,8))
+
+    def _build_cmd_with_values(self, task, values):
+        py = shlex.quote(sys.executable)
+        script = shlex.quote(str(task["script"]))
+        parts = [py, script]
         for spec in task.get('args', []):
             key = spec.get('key')
-            if spec.get('type') == 'path' and key in folder_keys:
-                w = self.form_widgets.get(key)
-                entry = getattr(w, 'entry', None)
-                if entry is not None:
-                    entry.delete(0, 'end')
-                    entry.insert(0, folder_path)
-                else:
-                    # plain Entry
-                    w.delete(0, 'end')
-                    w.insert(0, folder_path)
+            typ = spec.get('type')
+            val = values.get(key, '')
+            if typ == 'bool':
+                if val:
+                    parts.append(key)
+                continue
+            if not str(key).startswith('-'):
+                parts.append(shlex.quote(str(val)))
+            else:
+                parts.extend([key, shlex.quote(str(val))])
+        return " ".join(parts)
+
+    def _run_command(self, cmd):
+        # Reuse output pane; similar to run_task worker
+        self.run_btn.configure(state="disabled")
+        def worker():
+            try:
+                self.proc = subprocess.Popen(cmd, shell=True, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                for line in self.proc.stdout:
+                    self.append_output(line)
+                    try:
+                        self.logger.info("[proc] %s", line.rstrip())
+                    except Exception:
+                        pass
+                self.proc.wait()
+                rc = self.proc.returncode
+                self.append_output(f"\n[Exit {rc}]\n")
+                self.logger.info("Process exited | rc=%s", rc)
+            except Exception:
+                self.logger.exception("Process error")
+            finally:
+                self.proc = None
+                self.run_btn.configure(state="normal")
+        threading.Thread(target=worker, daemon=True).start()
 
     def explorer_show_info(self, path):
         # Reset fields

@@ -6,5 +6,6 @@
   "cover_max": 100,
   "jobs": 16,
   "genius_token": "",
-  "lastfm_key": ""
+  "lastfm_key": "",
+  "debug": true
 }
