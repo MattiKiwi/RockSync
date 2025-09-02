@@ -1,0 +1,10 @@
+{
+  "music_root": "/run/media/matti/Archive Drive/Music/iPod_Downsampled/New",
+  "lyrics_subdir": "Lyrics",
+  "lyrics_ext": ".lrc",
+  "cover_size": "100x100",
+  "cover_max": 100,
+  "jobs": 16,
+  "genius_token": "",
+  "lastfm_key": ""
+}
