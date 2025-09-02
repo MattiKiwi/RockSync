@@ -1,17 +1,20 @@
 import os
 import sys
+import argparse
 from mutagen.flac import FLAC
 from pathlib import Path
-from lyricsgenius import Genius
+try:
+    from lyricsgenius import Genius
+except Exception:
+    Genius = None
 
-# -- Settings --
-MUSIC_DIR = "/run/media/matti/MARI_S CLAS/Music"  # ← Change this
-LYRICS_SUBDIR = "Lyrics"
-LYRICS_EXT = ".lrc"
-#GENIUS_TOKEN = "Kl9cDpQNRJEn63Cfuidqu9xcxQIy50xb1rywhQwk8BKlEc5K3hOFUkTggoFUH6D2"
-GENIUS_TOKEN = None #Deprecated
-genius = Genius(GENIUS_TOKEN, skip_non_songs=True, remove_section_headers=True) \
-    if GENIUS_TOKEN else None
+# -- Defaults --
+DEFAULT_MUSIC_DIR = "/run/media/matti/MARI_S CLAS/Music"
+DEFAULT_LYRICS_SUBDIR = "Lyrics"
+DEFAULT_LYRICS_EXT = ".lrc"
+DEFAULT_GENIUS_TOKEN = None
+
+genius = None
 
 LOG = []
 
@@ -61,9 +64,30 @@ def process_file(flac_path):
     LOG.append(f"Wrote {used_source} lyrics to {outpath}")
 
 def main():
-    if not GENIUS_TOKEN:
-        print("⚠ Warning: No Genius token; only embedded lyrics used.")
-    for root, _, files in os.walk(MUSIC_DIR):
+    parser = argparse.ArgumentParser(description="Export embedded or fetched lyrics to sidecar files for FLACs")
+    parser.add_argument("--music-dir", default=DEFAULT_MUSIC_DIR, help="Root music directory to scan")
+    parser.add_argument("--lyrics-subdir", default=DEFAULT_LYRICS_SUBDIR, help="Subdirectory name to store lyrics files")
+    parser.add_argument("--ext", default=DEFAULT_LYRICS_EXT, help="Lyrics file extension, e.g. .lrc or .txt")
+    parser.add_argument("--genius-token", default=DEFAULT_GENIUS_TOKEN, help="Genius API token (optional)")
+    args = parser.parse_args()
+
+    global genius, LYRICS_SUBDIR, LYRICS_EXT
+    LYRICS_SUBDIR = args.lyrics_subdir
+    LYRICS_EXT = args.ext
+
+    if args.genius_token and Genius:
+        try:
+            print("Using Genius for online fallback...")
+            genius = Genius(args.genius_token, skip_non_songs=True, remove_section_headers=True)
+        except Exception as e:
+            print(f"⚠ Could not initialize Genius client: {e}")
+            genius = None
+    else:
+        if not Genius and args.genius_token:
+            print("⚠ lyricsgenius not installed; skipping online fetch.")
+        print("⚠ No Genius token; only embedded lyrics used.")
+
+    for root, _, files in os.walk(args.music_dir):
         for f in files:
             if f.lower().endswith(".flac"):
                 try:

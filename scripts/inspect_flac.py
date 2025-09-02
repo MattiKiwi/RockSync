@@ -1,3 +1,4 @@
+import argparse
 from mutagen.flac import FLAC
 from pathlib import Path
 import sys
@@ -40,6 +41,11 @@ def debug_flac_tags(flac_path):
     except Exception as e:
         print(f"❌ Error reading FLAC: {e}")
 
-# === Usage ===
+def main():
+    parser = argparse.ArgumentParser(description="Inspect FLAC tags, lyrics-related tags, and embedded pictures")
+    parser.add_argument("file", help="Path to a .flac file")
+    args = parser.parse_args()
+    debug_flac_tags(args.file)
+
 if __name__ == "__main__":
-    debug_flac_tags("/run/media/matti/Archive Drive/Music/Albums/Eminem - Encore (Deluxe Version) (Explicit)/101. Eminem - Curtains Up (Explicit).flac")
+    main()

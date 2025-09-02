@@ -1,4 +1,5 @@
 import os
+import argparse
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,11 @@ def scan_and_convert(base_dir):
                 else:
                     print(f"Skipped (already converted): {output_file}")
 
+def main():
+    parser = argparse.ArgumentParser(description="Recursively convert .m4a to .flac in a base folder")
+    parser.add_argument("base", help="Base folder to scan recursively")
+    args = parser.parse_args()
+    scan_and_convert(args.base)
+
 if __name__ == "__main__":
-    folder_path = "/run/media/matti/Archive Drive/Music/iPod_Downsampled/Playlists/Lofi"
-    scan_and_convert(folder_path)
+    main()

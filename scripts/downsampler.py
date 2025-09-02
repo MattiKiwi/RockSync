@@ -1,10 +1,10 @@
 import os
+import argparse
 import subprocess
 from multiprocessing import Pool, cpu_count
 
-# === Settings ===
-SOURCE_DIR = "E:/Music/iPod_Downsampled/New"     # ← Change this
-FFMPEG_PATH = "ffmpeg"                       # Make sure ffmpeg is installed and in PATH
+DEFAULT_SOURCE_DIR = "E:/Music/iPod_Downsampled/New"
+FFMPEG_PATH = "ffmpeg"  # Ensure ffmpeg is installed and in PATH
 
 def downsample_flac(file_path):
     temp_output = file_path + ".tmp.flac"
@@ -33,11 +33,19 @@ def find_flac_files(root_dir):
                 flac_files.append(os.path.join(dirpath, f))
     return flac_files
 
-if __name__ == "__main__":
-    all_flacs = find_flac_files(SOURCE_DIR)
-    print(f"🔍 Found {len(all_flacs)} FLAC files. Starting conversion with {cpu_count()} processes...")
+def main():
+    parser = argparse.ArgumentParser(description="Downsample FLAC files to 16-bit 44.1kHz in place")
+    parser.add_argument("--source", default=DEFAULT_SOURCE_DIR, help="Root folder to process")
+    parser.add_argument("-j", "--jobs", type=int, default=cpu_count(), help="Number of parallel processes")
+    args = parser.parse_args()
 
-    with Pool(cpu_count()) as pool:
+    all_flacs = find_flac_files(args.source)
+    print(f"🔍 Found {len(all_flacs)} FLAC files. Starting conversion with {args.jobs} processes...")
+
+    with Pool(args.jobs) as pool:
         pool.map(downsample_flac, all_flacs)
 
     print("✅ All conversions completed.")
+
+if __name__ == "__main__":
+    main()

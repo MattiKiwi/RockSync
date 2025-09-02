@@ -1,11 +1,11 @@
 import os
+import argparse
 from mutagen.flac import FLAC, Picture
 from PIL import Image
 from io import BytesIO
 
-# === Settings ===
-FOLDER_PATH = "E:/Music/iPod_Downsampled/New/"  # ← Change this
-TARGET_SIZE = (100, 100)
+DEFAULT_FOLDER_PATH = "E:/Music/iPod_Downsampled/New/"
+DEFAULT_TARGET_SIZE = (100, 100)
 
 def resize_and_embed_flac_cover(flac_path, size):
     try:
@@ -46,9 +46,22 @@ def resize_and_embed_flac_cover(flac_path, size):
     except Exception as e:
         print(f"❌ Failed to process {flac_path}: {e}")
 
-# === Process all FLACs ===
-for root, _, files in os.walk(FOLDER_PATH):
-    for file in files:
-        if file.lower().endswith(".flac"):
-            full_path = os.path.join(root, file)
-            resize_and_embed_flac_cover(full_path, TARGET_SIZE)
+def main():
+    parser = argparse.ArgumentParser(description="Resize and re-embed front cover images in FLAC files")
+    parser.add_argument("--folder", default=DEFAULT_FOLDER_PATH, help="Folder to process recursively")
+    parser.add_argument("--size", default=f"{DEFAULT_TARGET_SIZE[0]}x{DEFAULT_TARGET_SIZE[1]}", help="Target size WIDTHxHEIGHT")
+    args = parser.parse_args()
+
+    try:
+        width, height = map(int, args.size.lower().split("x"))
+    except Exception:
+        raise SystemExit("--size must be WIDTHxHEIGHT, e.g. 100x100")
+
+    for root, _, files in os.walk(args.folder):
+        for file in files:
+            if file.lower().endswith(".flac"):
+                full_path = os.path.join(root, file)
+                resize_and_embed_flac_cover(full_path, (width, height))
+
+if __name__ == "__main__":
+    main()

@@ -1,11 +1,11 @@
 import os
+import argparse
 from mutagen.flac import FLAC, Picture
 from PIL import Image
 from io import BytesIO
 
-# === Settings ===
-FOLDER_PATH = "/run/media/matti/Archive Drive/Music/Full-Quality/Playlists/Lofi"  # ← Change this
-MAX_SIZE = 100
+DEFAULT_FOLDER_PATH = "/run/media/matti/Archive Drive/Music/Full-Quality/Playlists/Lofi"
+DEFAULT_MAX_SIZE = 100
 
 def resize_with_aspect_ratio(image, max_size):
     """Resize image while preserving aspect ratio, fitting within max_size."""
@@ -53,9 +53,17 @@ def resize_and_promote_cover(flac_path, max_size):
     except Exception as e:
         print(f"❌ Failed to process {flac_path}: {e}")
 
-# === Process all FLACs ===
-for root, _, files in os.walk(FOLDER_PATH):
-    for file in files:
-        if file.lower().endswith(".flac"):
-            full_path = os.path.join(root, file)
-            resize_and_promote_cover(full_path, MAX_SIZE)
+def main():
+    parser = argparse.ArgumentParser(description="Promote first non-cover image to front cover and resize")
+    parser.add_argument("--folder", default=DEFAULT_FOLDER_PATH, help="Folder to process recursively")
+    parser.add_argument("--max-size", type=int, default=DEFAULT_MAX_SIZE, help="Max size (pixels) for width/height")
+    args = parser.parse_args()
+
+    for root, _, files in os.walk(args.folder):
+        for file in files:
+            if file.lower().endswith(".flac"):
+                full_path = os.path.join(root, file)
+                resize_and_promote_cover(full_path, args.max_size)
+
+if __name__ == "__main__":
+    main()

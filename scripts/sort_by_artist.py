@@ -1,20 +1,21 @@
 import os
 import shutil
+import argparse
 
-# === Settings ===
-SOURCE_FOLDER = "E:\Music\Full-Quality\Albums"  # ← Change this
-SEPARATOR = " - "  # Separator between artist and album in folder names
-DRY_RUN = False     # Set to True to preview actions without moving
+DEFAULT_SOURCE_FOLDER = "E:/Music/Full-Quality/Albums"
+DEFAULT_SEPARATOR = " - "
+DEFAULT_DRY_RUN = False
+
+SEPARATOR = DEFAULT_SEPARATOR
+DRY_RUN = DEFAULT_DRY_RUN
 
 def organize_albums_by_artist(folder_path):
     for item in os.listdir(folder_path):
         item_path = os.path.join(folder_path, item)
 
-        # Skip non-directories
         if not os.path.isdir(item_path):
             continue
 
-        # Check for proper naming convention
         if SEPARATOR not in item:
             print(f"⚠ Skipping (no separator): {item}")
             continue
@@ -33,5 +34,19 @@ def organize_albums_by_artist(folder_path):
             shutil.move(item_path, new_path)
             print(f"✔ Moved: {item} → {artist}/{item}")
 
-# === Run it ===
-organize_albums_by_artist(SOURCE_FOLDER)
+def main():
+    parser = argparse.ArgumentParser(description="Group 'Artist - Album' folders under artist folders")
+    parser.add_argument("--source", default=DEFAULT_SOURCE_FOLDER, help="Source folder containing 'Artist - Album' folders")
+    parser.add_argument("--separator", default=DEFAULT_SEPARATOR, help="Separator between artist and album in names")
+    parser.add_argument("--dry-run", action="store_true", default=DEFAULT_DRY_RUN, help="Preview without moving files")
+    args = parser.parse_args()
+
+    global SEPARATOR, DRY_RUN
+    SEPARATOR = args.separator
+    DRY_RUN = args.dry_run
+
+    organize_albums_by_artist(args.source)
+
+if __name__ == "__main__":
+    main()
+

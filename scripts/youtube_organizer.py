@@ -1,16 +1,16 @@
 import os
 import re
+import argparse
 import subprocess
 import requests
 from mutagen.flac import FLAC
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# === CONFIGURATION ===
-SOURCE_DIR = "/run/media/matti/Archive Drive/Music/Unsorted_Test/LoFi hip hop mix"
-TARGET_FORMAT = "flac"
-LASTFM_API_KEY = "9e779da31c1e603cae855a52e60031dd"
-LASTFM_API_ROOT = "http://ws.audioscrobbler.com/2.0/"
-MAX_THREADS = 4  # Adjust based on CPU/network capability
+# Defaults
+DEFAULT_SOURCE_DIR = "/run/media/matti/Archive Drive/Music/Unsorted_Test/LoFi hip hop mix"
+DEFAULT_TARGET_FORMAT = "flac"
+DEFAULT_LASTFM_API_ROOT = "http://ws.audioscrobbler.com/2.0/"
+DEFAULT_MAX_THREADS = 4
 
 # === REGEX ===
 pattern = re.compile(r"^(?P<playlist>.+?) - (?P<index>\d{3}) (?P<artist>.+?) - (?P<title>.+?) \[[^\]]+\]\.m4a$")
@@ -59,7 +59,7 @@ def embed_metadata(file_path, artist, title, track, album):
     audio["album"] = album
     audio.save()
 
-def process_file(filename):
+def process_file(filename, source_dir, target_format, lastfm_api_key):
     if not filename.endswith(".m4a"):
         return
 
@@ -73,12 +73,12 @@ def process_file(filename):
     artist = match["artist"].strip()
     title = match["title"].strip()
 
-    playlist_folder = os.path.join(SOURCE_DIR, playlist)
+    playlist_folder = os.path.join(source_dir, playlist)
     os.makedirs(playlist_folder, exist_ok=True)
 
     base_name = f"{index} {artist} - {title}"
-    src_path = os.path.join(SOURCE_DIR, filename)
-    out_path = os.path.join(playlist_folder, f"{base_name}.{TARGET_FORMAT}")
+    src_path = os.path.join(source_dir, filename)
+    out_path = os.path.join(playlist_folder, f"{base_name}.{target_format}")
 
     print(f"[Processing] {base_name}")
 
@@ -86,7 +86,8 @@ def process_file(filename):
     reencode_to_flac(src_path, out_path)
 
     # Step 2: Fetch metadata
-    metadata = fetch_metadata_lastfm(artist, title)
+    # Require API key for metadata lookup
+    metadata = fetch_metadata_lastfm(artist, title) if lastfm_api_key else {"title": title, "artist": artist, "album": ""}
 
     # Step 3: Tag file
     embed_metadata(out_path, metadata["artist"], metadata["title"], index, metadata["album"])
@@ -97,12 +98,19 @@ def process_file(filename):
     print(f"[Done] {base_name}")
 
 def main():
-    files = [f for f in os.listdir(SOURCE_DIR) if f.endswith(".m4a")]
+    parser = argparse.ArgumentParser(description="Organize YouTube playlist audio into per-playlist folders and tag")
+    parser.add_argument("--source", default=DEFAULT_SOURCE_DIR, help="Source directory containing downloaded .m4a files")
+    parser.add_argument("--target-format", default=DEFAULT_TARGET_FORMAT, choices=["flac"], help="Target audio format")
+    parser.add_argument("--lastfm-key", default=os.getenv("LASTFM_API_KEY", None), help="Last.fm API key for metadata (optional)")
+    parser.add_argument("-j", "--jobs", type=int, default=DEFAULT_MAX_THREADS, help="Parallel threads")
+    args = parser.parse_args()
 
-    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        futures = [executor.submit(process_file, f) for f in files]
+    files = [f for f in os.listdir(args.source) if f.endswith(".m4a")]
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+        futures = [executor.submit(process_file, f, args.source, args.target_format, args.lastfm_key) for f in files]
         for future in as_completed(futures):
-            future.result()  # raises exception if any
+            future.result()
 
 if __name__ == "__main__":
     main()
