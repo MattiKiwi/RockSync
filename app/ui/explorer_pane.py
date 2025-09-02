@@ -2,7 +2,6 @@ import os
 import io
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image, ImageTk  # Optional; handled gracefully if missing in caller
 from logging_utils import ui_log
 
 
@@ -14,12 +13,13 @@ class ExplorerPane(ttk.Frame):
         self._build_ui()
 
     def _build_ui(self):
+        # Make this pane responsive within its tab
         self.grid(sticky="nsew")
-        self.master.rowconfigure(1, weight=1)
-        self.master.columnconfigure(0, weight=1)
-        self.master.columnconfigure(1, weight=0)
+        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)   # list area grows
+        self.columnconfigure(1, weight=0)   # detail panel keeps natural size
 
-        top = ttk.Frame(self.master)
+        top = ttk.Frame(self)
         top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
         ttk.Label(top, text="Path:").pack(side="left")
         self.explorer_path = ttk.Entry(top, width=70)
@@ -30,22 +30,32 @@ class ExplorerPane(ttk.Frame):
         ttk.Button(top, text="Up", command=self.go_up).pack(side="left", padx=4)
         ttk.Button(top, text="Refresh", command=lambda: self.navigate(self.explorer_path.get())).pack(side="left")
 
+        # Horizontal PanedWindow for resizable split
+        pw = ttk.Panedwindow(self, orient='horizontal')
+        pw.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=8, pady=(0, 8))
+        # List frame with its own grid to keep scrollbar aligned
+        list_frame = ttk.Frame(pw)
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        pw.add(list_frame, weight=3)
+
         cols = ("name", "type", "size", "modified", "actions")
-        self.tree = ttk.Treeview(self.master, columns=cols, show="headings")
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         for c, w in zip(cols, (300, 80, 100, 160, 50)):
             self.tree.heading(c, text=c.title())
             self.tree.column(c, width=w, anchor="w")
-        self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=(0, 8))
-        yscroll = ttk.Scrollbar(self.master, orient="vertical", command=self.tree.yview)
-        yscroll.grid(row=1, column=0, sticky="nse", padx=(0, 8), pady=(0, 8))
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        yscroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=yscroll.set)
         self.tree.bind("<Double-1>", self.on_open)
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Button-1>", self.on_click)
         self.tree.bind("<Button-3>", self.on_right_click)
 
-        detail = ttk.Frame(self.master)
-        detail.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
+        detail = ttk.Frame(pw)
+        detail.columnconfigure(0, weight=1)
+        pw.add(detail, weight=2)
         self.cover_label = ttk.Label(detail, text="No cover", anchor="center")
         self.cover_label.grid(row=0, column=0, sticky="n", padx=4, pady=4)
         ttk.Label(detail, text="Metadata").grid(row=1, column=0, sticky="w", padx=4)
@@ -56,8 +66,20 @@ class ExplorerPane(ttk.Frame):
         self.lyrics_text.grid(row=4, column=0, sticky="nsew", padx=4)
         detail.rowconfigure(2, weight=1)
         detail.rowconfigure(4, weight=1)
+        # Auto-adjust name column on resize
+        self.tree.bind('<Configure>', self._on_tree_resize)
 
         self.navigate(self.explorer_path.get())
+
+    def _on_tree_resize(self, event):
+        try:
+            total = self.tree.winfo_width()
+            # Fetch fixed columns current widths
+            fixed = sum(self.tree.column(c, width=None) for c in ('type', 'size', 'modified', 'actions'))
+            name_w = max(120, total - fixed - 24)
+            self.tree.column('name', width=name_w)
+        except Exception:
+            pass
 
     # Navigation
     def _set_path(self, path):
@@ -220,6 +242,7 @@ class ExplorerPane(ttk.Frame):
                     img_bytes = None
         if img_bytes:
             try:
+                from PIL import Image, ImageTk
                 im = Image.open(io.BytesIO(img_bytes)).convert('RGB')
                 im.thumbnail((300, 300))
                 photo = ImageTk.PhotoImage(im)
@@ -288,4 +311,3 @@ class ExplorerPane(ttk.Frame):
             return _dt.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
         except Exception:
             return ''
-

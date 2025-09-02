@@ -7,5 +7,7 @@
   "jobs": 16,
   "genius_token": "",
   "lastfm_key": "",
-  "debug": true
+  "debug": true,
+  "theme_file": "retro-98.css",
+  "theme": "retro98"
 }

@@ -13,6 +13,8 @@ from logging_utils import setup_logging, ui_log
 from tasks_registry import get_tasks
 from ui.explorer_pane import ExplorerPane
 from ui.tracks_pane import TracksPane
+from theme import apply_theme
+from theme_loader import list_theme_files
 
 
 class App(tk.Tk):
@@ -45,11 +47,16 @@ class App(tk.Tk):
         # Explorer tab
         self.explore_tab = ttk.Frame(self.tabs)
         self.tabs.add(self.explore_tab, text="Explorer")
+        # Allow child to expand to full tab area
+        self.explore_tab.rowconfigure(0, weight=1)
+        self.explore_tab.columnconfigure(0, weight=1)
         self.explorer = ExplorerPane(self, self.explore_tab)
 
         # Tracks tab
         self.tracks_tab = ttk.Frame(self.tabs)
         self.tabs.add(self.tracks_tab, text="Tracks")
+        self.tracks_tab.rowconfigure(0, weight=1)
+        self.tracks_tab.columnconfigure(0, weight=1)
         self.tracks = TracksPane(self, self.tracks_tab)
 
         # Settings tab
@@ -61,6 +68,8 @@ class App(tk.Tk):
         self.status = tk.StringVar(value=f"Music root: {self.settings.get('music_root')}")
         status_bar = ttk.Label(self, textvariable=self.status, anchor="w")
         status_bar.grid(row=1, column=0, sticky="ew")
+        # Apply theme after UI exists
+        self._apply_theme()
 
     # --------------- Settings tab ---------------
     def _build_settings_tab(self, parent):
@@ -112,6 +121,15 @@ class App(tk.Tk):
         dbg_cb = ttk.Checkbutton(parent, text="Enable verbose debug logging (writes to app/debug.log)", variable=self.debug_var)
         add_row("Debug", dbg_cb)
 
+        # Theme selector
+        theme_options = ['system'] + list_theme_files()
+        # Back-compat: migrate old 'theme' to 'theme_file' if present
+        if 'theme_file' not in self.settings and 'theme' in self.settings:
+            self.settings['theme_file'] = self.settings['theme']
+        self.theme_box = ttk.Combobox(parent, values=theme_options, state='readonly')
+        self.theme_box.set(self.settings.get('theme_file', 'system'))
+        add_row("Theme", self.theme_box)
+
         btns = ttk.Frame(parent)
         ttk.Button(btns, text="Save Settings", command=self.on_save_settings).pack(side="left")
         ttk.Button(btns, text="Reload", command=self.on_reload_settings).pack(side="left", padx=6)
@@ -127,10 +145,12 @@ class App(tk.Tk):
         self.settings["genius_token"] = self.set_genius.get()
         self.settings["lastfm_key"] = self.set_lastfm.get()
         self.settings["debug"] = bool(self.debug_var.get())
+        self.settings["theme_file"] = self.theme_box.get()
         if save_settings(self.settings):
             self.status.set(f"Music root: {self.settings.get('music_root')}")
             messagebox.showinfo("Settings", "Settings saved.")
             self._reconfigure_logging()
+            self._apply_theme()
 
     def on_reload_settings(self):
         self.settings = load_settings()
@@ -143,11 +163,32 @@ class App(tk.Tk):
         self.set_genius.delete(0, 'end'); self.set_genius.insert(0, self.settings.get('genius_token', ''))
         self.set_lastfm.delete(0, 'end'); self.set_lastfm.insert(0, self.settings.get('lastfm_key', ''))
         self.debug_var.set(bool(self.settings.get('debug', False)))
+        self.theme_box.set(self.settings.get('theme_file', 'system'))
         self.status.set(f"Music root: {self.settings.get('music_root')}")
         self._reconfigure_logging()
+        self._apply_theme()
 
     def _reconfigure_logging(self):
         self.logger = setup_logging(self.settings, self.session_id)
+
+    def _apply_theme(self):
+        # Persist selected theme into current settings (not saved until Save)
+        sel = getattr(self, 'theme_box', None)
+        if sel is not None:
+            self.settings['theme_file'] = sel.get()
+        palette = apply_theme(self, self.settings.get('theme_file', 'system'))
+        # Non-ttk widgets coloring
+        text_bg = palette.get('surface', '#FFFFFF')
+        text_fg = palette.get('text', '#000000')
+        try:
+            self.output.configure(background=text_bg, foreground=text_fg, insertbackground=text_fg)
+        except Exception:
+            pass
+        try:
+            self.explorer.meta_text.configure(background=text_bg, foreground=text_fg, insertbackground=text_fg)
+            self.explorer.lyrics_text.configure(background=text_bg, foreground=text_fg, insertbackground=text_fg)
+        except Exception:
+            pass
 
     # --------------- Utility helpers ---------------
     def browse_dir(self, entry):
@@ -188,14 +229,16 @@ class App(tk.Tk):
 
         self.form_frame = ttk.LabelFrame(right, text="Parameters")
         self.form_frame.grid(row=0, column=0, sticky="ew")
+        self.form_frame.columnconfigure(1, weight=1)
         self.form_widgets = {}
 
         actions = ttk.Frame(right)
         actions.grid(row=1, column=0, sticky="ew", pady=(8, 8))
+        actions.columnconfigure(0, weight=1)
         self.run_btn = ttk.Button(actions, text="Run", command=self.run_task)
-        self.run_btn.pack(side="left")
+        self.run_btn.grid(row=0, column=1, sticky="e")
         self.stop_btn = ttk.Button(actions, text="Stop", command=self.stop_task)
-        self.stop_btn.pack(side="left", padx=(8, 0))
+        self.stop_btn.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         out_frame = ttk.LabelFrame(right, text="Output")
         out_frame.grid(row=2, column=0, sticky="nsew")

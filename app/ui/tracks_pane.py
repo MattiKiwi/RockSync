@@ -12,11 +12,12 @@ class TracksPane(ttk.Frame):
         self._build_ui()
 
     def _build_ui(self):
+        # Make this pane responsive within its tab
         self.grid(sticky="nsew")
-        self.master.rowconfigure(1, weight=1)
-        self.master.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
 
-        top = ttk.Frame(self.master)
+        top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
         ttk.Label(top, text="Folder:").pack(side="left")
         self.path_entry = ttk.Entry(top, width=70)
@@ -27,17 +28,25 @@ class TracksPane(ttk.Frame):
         ttk.Button(top, text="Scan", command=self.scan).pack(side="left", padx=4)
 
         cols = ("artist", "album", "title", "track", "format", "lyrics", "cover", "duration", "path")
-        self.tree = ttk.Treeview(self.master, columns=cols, show="headings")
+        # List frame to hold tree + scrollbar with proper resize
+        list_frame = ttk.Frame(self)
+        list_frame.grid(row=1, column=0, sticky="nsew")
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         for c in cols:
             self.tree.heading(c, text=c.title())
             self.tree.column(c, width=120 if c != "path" else 400, anchor="w")
-        self.tree.grid(row=1, column=0, sticky="nsew")
-        yscroll = ttk.Scrollbar(self.master, orient="vertical", command=self.tree.yview)
-        yscroll.grid(row=1, column=1, sticky="ns")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        yscroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=yscroll.set)
+        # Auto-stretch the Path column on resize
+        self.tree.bind('<Configure>', self._on_tree_resize)
 
         self.scan_status = tk.StringVar(value="")
-        ttk.Label(self.master, textvariable=self.scan_status).grid(row=2, column=0, sticky="w", padx=8, pady=(4, 8))
+        ttk.Label(self, textvariable=self.scan_status).grid(row=2, column=0, sticky="w", padx=8, pady=(4, 8))
 
     def _browse(self):
         path = filedialog.askdirectory()
@@ -153,3 +162,13 @@ class TracksPane(ttk.Frame):
         values = (info['artist'], info['album'], info['title'], info['track'], info['format'], info['lyrics'], info['cover'], info['duration'], info['path'])
         self.tree.insert('', 'end', values=values)
 
+    def _on_tree_resize(self, event):
+        try:
+            total = self.tree.winfo_width()
+            # Fixed widths for non-path columns
+            fixed_cols = ['artist','album','title','track','format','lyrics','cover','duration']
+            fixed = sum(self.tree.column(c, width=None) for c in fixed_cols)
+            path_w = max(200, total - fixed - 24)
+            self.tree.column('path', width=path_w)
+        except Exception:
+            pass

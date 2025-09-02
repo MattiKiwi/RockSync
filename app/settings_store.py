@@ -12,6 +12,7 @@ DEFAULT_SETTINGS = {
     "genius_token": "",
     "lastfm_key": "",
     "debug": False,
+    "theme_file": "modern-light.css",
 }
 
 
@@ -38,4 +39,3 @@ def save_settings(settings) -> bool:
         except Exception:
             pass
         return False
-

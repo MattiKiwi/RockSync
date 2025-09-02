@@ -1,0 +1,10 @@
+:root {
+  bg: #1E1E1E;
+  surface: #252526;
+  text: #E6E6E6;
+  muted: #A0A0A0;
+  accent: #569CD6;
+  selection_bg: #094771;
+  selection_fg: #FFFFFF;
+  entry_bg: #333333;
+}
