@@ -202,10 +202,15 @@ class App(tk.Tk):
         self.tabs.add(self.run_tab, text="Tasks")
         self._build_run_tab(self.run_tab)
 
-        # Explorer tab
+        # Explorer tab (folder navigation)
         self.explore_tab = ttk.Frame(self.tabs)
         self.tabs.add(self.explore_tab, text="Explorer")
         self._build_explorer_tab(self.explore_tab)
+
+        # Tracks tab (full library list)
+        self.tracks_tab = ttk.Frame(self.tabs)
+        self.tabs.add(self.tracks_tab, text="Tracks")
+        self._build_tracks_tab(self.tracks_tab)
 
         # Settings tab
         self.settings_tab = ttk.Frame(self.tabs)
@@ -265,28 +270,82 @@ class App(tk.Tk):
         self.on_task_select()
 
     def _build_explorer_tab(self, parent):
+        # Layout: top bar, main split (list on left, detail on right)
+        parent.rowconfigure(1, weight=1)
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=0)
+
+        # Top bar
+        top = ttk.Frame(parent)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
+        ttk.Label(top, text="Path:").pack(side="left")
+        self.explorer_path = ttk.Entry(top, width=70)
+        self.explorer_path.pack(side="left", padx=4, fill="x", expand=True)
+        self.explorer_path.insert(0, self.settings.get("music_root", str(ROOT)))
+        ttk.Button(top, text="Use Music Root", command=lambda: self._set_explorer_path(self.settings.get('music_root', str(ROOT)))).pack(side="left", padx=4)
+        ttk.Button(top, text="Browse", command=lambda: self.browse_dir(self.explorer_path)).pack(side="left")
+        ttk.Button(top, text="Up", command=self.explorer_up).pack(side="left", padx=4)
+        ttk.Button(top, text="Refresh", command=lambda: self.explorer_navigate(self.explorer_path.get())).pack(side="left")
+
+        # Directory listing
+        self.explorer_cols = ("name", "type", "size", "modified", "actions")
+        self.explorer_list = ttk.Treeview(parent, columns=self.explorer_cols, show="headings")
+        for c, w in zip(self.explorer_cols, (300, 80, 100, 160, 50)):
+            self.explorer_list.heading(c, text=c.title())
+            self.explorer_list.column(c, width=w, anchor="w")
+        self.explorer_list.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=(0, 8))
+        yscroll = ttk.Scrollbar(parent, orient="vertical", command=self.explorer_list.yview)
+        yscroll.grid(row=1, column=0, sticky="nse", padx=(0, 8), pady=(0, 8))
+        self.explorer_list.configure(yscrollcommand=yscroll.set)
+        self.explorer_list.bind("<Double-1>", self.explorer_on_open)
+        self.explorer_list.bind("<<TreeviewSelect>>", self.explorer_on_select)
+        self.explorer_list.bind("<Button-1>", self.explorer_on_click)
+        self.explorer_list.bind("<Button-3>", self.explorer_on_right_click)
+
+        # Detail panel
+        detail = ttk.Frame(parent)
+        detail.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
+        # Cover art
+        self.cover_label = ttk.Label(detail, text="No cover", anchor="center")
+        self.cover_label.grid(row=0, column=0, sticky="n", padx=4, pady=4)
+        self.cover_image_ref = None
+        # Metadata
+        ttk.Label(detail, text="Metadata").grid(row=1, column=0, sticky="w", padx=4)
+        self.meta_text = tk.Text(detail, width=40, height=12, wrap="word")
+        self.meta_text.grid(row=2, column=0, sticky="nsew", padx=4)
+        # Lyrics
+        ttk.Label(detail, text="Lyrics (preview)").grid(row=3, column=0, sticky="w", padx=4, pady=(8, 0))
+        self.lyrics_text = tk.Text(detail, width=40, height=12, wrap="word")
+        self.lyrics_text.grid(row=4, column=0, sticky="nsew", padx=4)
+        detail.rowconfigure(2, weight=1)
+        detail.rowconfigure(4, weight=1)
+
+        # Initial load
+        self.explorer_navigate(self.explorer_path.get())
+
+    def _build_tracks_tab(self, parent):
         parent.rowconfigure(1, weight=1)
         parent.columnconfigure(0, weight=1)
 
         top = ttk.Frame(parent)
         top.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
         ttk.Label(top, text="Folder:").pack(side="left")
-        self.explore_path = ttk.Entry(top, width=70)
-        self.explore_path.pack(side="left", padx=4, fill="x", expand=True)
-        self.explore_path.insert(0, self.settings.get("music_root", str(ROOT)))
-        ttk.Button(top, text="Browse", command=lambda: self.browse_dir(self.explore_path)).pack(side="left")
-        ttk.Button(top, text="Use Music Root", command=lambda: self.explore_path.delete(0, 'end') or self.explore_path.insert(0, self.settings.get('music_root', str(ROOT)))).pack(side="left", padx=4)
+        self.tracks_path = ttk.Entry(top, width=70)
+        self.tracks_path.pack(side="left", padx=4, fill="x", expand=True)
+        self.tracks_path.insert(0, self.settings.get("music_root", str(ROOT)))
+        ttk.Button(top, text="Browse", command=lambda: self.browse_dir(self.tracks_path)).pack(side="left")
+        ttk.Button(top, text="Use Music Root", command=lambda: self.tracks_path.delete(0, 'end') or self.tracks_path.insert(0, self.settings.get('music_root', str(ROOT)))).pack(side="left", padx=4)
         ttk.Button(top, text="Scan", command=self.scan_library).pack(side="left", padx=4)
 
         cols = ("artist", "album", "title", "track", "format", "lyrics", "cover", "duration", "path")
-        self.tree = ttk.Treeview(parent, columns=cols, show="headings")
+        self.tracks_tree = ttk.Treeview(parent, columns=cols, show="headings")
         for c in cols:
-            self.tree.heading(c, text=c.title())
-            self.tree.column(c, width=120 if c != "path" else 400, anchor="w")
-        self.tree.grid(row=1, column=0, sticky="nsew")
-        yscroll = ttk.Scrollbar(parent, orient="vertical", command=self.tree.yview)
+            self.tracks_tree.heading(c, text=c.title())
+            self.tracks_tree.column(c, width=120 if c != "path" else 400, anchor="w")
+        self.tracks_tree.grid(row=1, column=0, sticky="nsew")
+        yscroll = ttk.Scrollbar(parent, orient="vertical", command=self.tracks_tree.yview)
         yscroll.grid(row=1, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=yscroll.set)
+        self.tracks_tree.configure(yscrollcommand=yscroll.set)
 
         self.scan_status = tk.StringVar(value="")
         ttk.Label(parent, textvariable=self.scan_status).grid(row=2, column=0, sticky="w", padx=8, pady=(4, 8))
@@ -558,13 +617,13 @@ class App(tk.Tk):
 
     # Explorer actions
     def scan_library(self):
-        folder = self.explore_path.get().strip()
+        folder = self.tracks_path.get().strip()
         if not folder or not os.path.isdir(folder):
             messagebox.showwarning("Invalid folder", "Please choose a valid folder")
             return
         # Clear current
-        for i in self.tree.get_children():
-            self.tree.delete(i)
+        for i in self.tracks_tree.get_children():
+            self.tracks_tree.delete(i)
         self.scan_status.set("Scanning...")
 
         def worker():
@@ -663,7 +722,351 @@ class App(tk.Tk):
 
     def _insert_track_row(self, info):
         values = (info['artist'], info['album'], info['title'], info['track'], info['format'], info['lyrics'], info['cover'], info['duration'], info['path'])
-        self.tree.insert('', 'end', values=values)
+        self.tracks_tree.insert('', 'end', values=values)
+
+    # ===== Explorer helpers =====
+    def _set_explorer_path(self, path):
+        self.explorer_path.delete(0, 'end')
+        self.explorer_path.insert(0, path)
+        self.explorer_navigate(path)
+
+    def explorer_up(self):
+        cur = self.explorer_path.get().strip()
+        parent = os.path.dirname(cur.rstrip(os.sep)) or cur
+        if parent and os.path.isdir(parent):
+            self._set_explorer_path(parent)
+
+    def explorer_navigate(self, path):
+        path = os.path.abspath(path)
+        if not os.path.isdir(path):
+            messagebox.showwarning("Invalid folder", f"Not a directory:\n{path}")
+            return
+        self._set_explorer_entry(path)
+        # Clear listing
+        for i in self.explorer_list.get_children():
+            self.explorer_list.delete(i)
+        # Populate with entries
+        try:
+            with os.scandir(path) as it:
+                dirs, files = [], []
+                for entry in it:
+                    try:
+                        st = entry.stat()
+                        info = (entry.name, 'Folder' if entry.is_dir() else 'File', st.st_size, st.st_mtime, entry.path)
+                        if entry.is_dir():
+                            dirs.append(info)
+                        else:
+                            files.append(info)
+                    except Exception:
+                        continue
+            # Sort: directories first, then files by name
+            dirs.sort(key=lambda x: x[0].lower())
+            files.sort(key=lambda x: x[0].lower())
+            for name, typ, size, mtime, full in dirs + files:
+                actions = '…' if typ == 'Folder' else ''
+                self.explorer_list.insert('', 'end', values=(name, typ, self._fmt_size(size), self._fmt_mtime(mtime), actions), tags=(full,))
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not list folder:\n{e}")
+
+    def _set_explorer_entry(self, path):
+        self.explorer_path.delete(0, 'end')
+        self.explorer_path.insert(0, path)
+
+    def explorer_on_open(self, event):
+        item = self.explorer_list.focus()
+        if not item:
+            return
+        name = self.explorer_list.item(item, 'values')[0]
+        base = self.explorer_path.get().strip()
+        full = os.path.join(base, name)
+        if os.path.isdir(full):
+            self.explorer_navigate(full)
+        else:
+            self.explorer_show_info(full)
+
+    def explorer_on_select(self, event):
+        item = self.explorer_list.focus()
+        if not item:
+            return
+        name = self.explorer_list.item(item, 'values')[0]
+        base = self.explorer_path.get().strip()
+        full = os.path.join(base, name)
+        if os.path.isfile(full):
+            self.explorer_show_info(full)
+
+    def explorer_on_click(self, event):
+        row_id = self.explorer_list.identify_row(event.y)
+        col_id = self.explorer_list.identify_column(event.x)
+        if not row_id:
+            return
+        # If clicking the actions column and it's a folder, open context menu
+        try:
+            idx = int(col_id.replace('#', '')) - 1
+        except Exception:
+            return
+        if idx != list(self.explorer_cols).index('actions'):
+            return
+        vals = self.explorer_list.item(row_id, 'values')
+        if not vals:
+            return
+        name, typ = vals[0], vals[1]
+        if typ != 'Folder':
+            return
+        base = self.explorer_path.get().strip()
+        folder_path = os.path.join(base, name)
+        self._show_folder_menu(folder_path, event)
+
+    def explorer_on_right_click(self, event):
+        row_id = self.explorer_list.identify_row(event.y)
+        if not row_id:
+            return
+        vals = self.explorer_list.item(row_id, 'values')
+        if not vals:
+            return
+        name, typ = vals[0], vals[1]
+        if typ != 'Folder':
+            return
+        base = self.explorer_path.get().strip()
+        folder_path = os.path.join(base, name)
+        self._show_folder_menu(folder_path, event)
+
+    def _show_folder_menu(self, folder_path, event):
+        # Destroy any existing context menu
+        if getattr(self, "_ctx_menu", None):
+            try:
+                self._ctx_menu.unpost()
+                self._ctx_menu.destroy()
+            except Exception:
+                pass
+            self._ctx_menu = None
+
+        menu = tk.Menu(self, tearoff=0)
+        # Build task list for folder-accepting tasks
+        for task in TASKS:
+            if self._task_accepts_folder(task):
+                menu.add_command(label=f"Use: {task['label']}", command=lambda t=task: self._open_task_with_folder(t, folder_path))
+        if not menu.index('end'):
+            menu.add_command(label="No folder tasks found", state='disabled')
+        # Keep reference for dismissal and teardown
+        self._ctx_menu = menu
+        # Global dismiss bindings
+        self.bind_all("<Button-1>", self._dismiss_context_menu, add="+")
+        self.bind_all("<Button-3>", self._dismiss_context_menu, add="+")
+        self.bind_all("<Escape>", self._dismiss_context_menu, add="+")
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+
+    def _dismiss_context_menu(self, event=None):
+        # Delay unpost slightly to let menu commands fire first
+        self.after(10, self._destroy_ctx_menu)
+
+    def _destroy_ctx_menu(self):
+        menu = getattr(self, "_ctx_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.unpost()
+        except Exception:
+            pass
+        try:
+            menu.destroy()
+        except Exception:
+            pass
+        self._ctx_menu = None
+        # Remove global bindings
+        try:
+            self.unbind_all("<Button-1>")
+            self.unbind_all("<Button-3>")
+            self.unbind_all("<Escape>")
+        except Exception:
+            pass
+
+    def _task_accepts_folder(self, task):
+        folder_keys = {"--folder", "--root", "--source", "--base-dir", "base", "source", "--music-dir"}
+        for spec in task.get('args', []):
+            if spec.get('type') == 'path' and spec.get('key') in folder_keys:
+                return True
+        return False
+
+    def _open_task_with_folder(self, task, folder_path):
+        # Switch to Tasks tab and select task
+        try:
+            idx = [t["label"] for t in TASKS].index(task["label"])
+        except ValueError:
+            return
+        self.tabs.select(self.run_tab)
+        self.task_list.selection_clear(0, 'end')
+        self.task_list.selection_set(idx)
+        self.task_list.activate(idx)
+        self.on_task_select()
+        # Prefill path-like arguments
+        folder_keys = {"--folder", "--root", "--source", "--base-dir", "base", "source", "--music-dir"}
+        for spec in task.get('args', []):
+            key = spec.get('key')
+            if spec.get('type') == 'path' and key in folder_keys:
+                w = self.form_widgets.get(key)
+                entry = getattr(w, 'entry', None)
+                if entry is not None:
+                    entry.delete(0, 'end')
+                    entry.insert(0, folder_path)
+                else:
+                    # plain Entry
+                    w.delete(0, 'end')
+                    w.insert(0, folder_path)
+
+    def explorer_show_info(self, path):
+        # Reset fields
+        self.cover_label.configure(text="No cover", image='')
+        self.cover_image_ref = None
+        self.meta_text.delete('1.0', 'end')
+        self.lyrics_text.delete('1.0', 'end')
+
+        # Only parse supported audio files
+        ext = os.path.splitext(path)[1].lower()
+        supported = {'.flac', '.mp3', '.m4a', '.alac', '.aac', '.ogg', '.opus', '.wav'}
+        if ext not in supported:
+            self.meta_text.insert('end', f"Selected: {os.path.basename(path)}\nNot an audio file supported for metadata preview.")
+            return
+        try:
+            from mutagen import File as MFile
+            audio = MFile(path)
+        except Exception as e:
+            self.meta_text.insert('end', f"Error reading file: {e}")
+            return
+
+        # Metadata dump
+        meta_lines = []
+        try:
+            # Prefer easy tags if available
+            try:
+                easy = MFile(path, easy=True)
+                tags = getattr(easy, 'tags', None) or {}
+            except Exception:
+                tags = getattr(audio, 'tags', None) or {}
+            # Normalize to simple strings, excluding lyrics-related tags
+            def is_lyrics_key(kstr):
+                kl = kstr.lower()
+                return ('lyric' in kl) or ('uslt' in kl) or kl.endswith('©lyr')
+            for k, v in (tags.items() if hasattr(tags, 'items') else []):
+                kstr = str(k)
+                if is_lyrics_key(kstr):
+                    continue
+                if isinstance(v, list):
+                    val = "; ".join(str(x) for x in v)
+                else:
+                    val = str(v)
+                if len(val) > 500:
+                    val = val[:500] + '…'
+                meta_lines.append(f"{k}: {val}")
+        except Exception:
+            pass
+        # Basic info
+        try:
+            if getattr(audio, 'info', None) and getattr(audio.info, 'length', None):
+                secs = int(audio.info.length)
+                meta_lines.insert(0, f"Duration: {secs//60}:{secs%60:02d}")
+        except Exception:
+            pass
+        self.meta_text.insert('end', "\n".join(meta_lines) or "No tags found.")
+
+        # Lyrics preview (tags + sidecars)
+        lyrics_text = self._extract_lyrics_text(audio, path)
+        if lyrics_text:
+            if len(lyrics_text) > 5000:
+                lyrics_text = lyrics_text[:5000] + '\n…'
+            self.lyrics_text.insert('end', lyrics_text)
+        else:
+            self.lyrics_text.insert('end', "No lyrics found.")
+
+        # Cover image
+        img_bytes = self._extract_cover_bytes(audio)
+        if not img_bytes:
+            # fallback to cover.jpg
+            cpath = os.path.join(os.path.dirname(path), 'cover.jpg')
+            if os.path.exists(cpath):
+                try:
+                    with open(cpath, 'rb') as f:
+                        img_bytes = f.read()
+                except Exception:
+                    img_bytes = None
+        if img_bytes:
+            try:
+                from PIL import Image, ImageTk
+                import io
+                im = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+                im.thumbnail((300, 300))
+                photo = ImageTk.PhotoImage(im)
+                self.cover_label.configure(image=photo, text='')
+                self.cover_image_ref = photo
+            except Exception as e:
+                self.cover_label.configure(text=f"Cover present (install Pillow to display)")
+
+    def _extract_cover_bytes(self, audio):
+        try:
+            cname = audio.__class__.__name__.lower()
+            if 'flac' in cname and hasattr(audio, 'pictures') and audio.pictures:
+                # Prefer front cover type 3
+                pics = sorted(audio.pictures, key=lambda p: 0 if getattr(p, 'type', None) == 3 else 1)
+                return pics[0].data if pics else None
+            if 'mp3' in cname and getattr(audio, 'tags', None):
+                for k, v in audio.tags.items():
+                    if str(k).startswith('APIC'):
+                        return getattr(v, 'data', None)
+            if ('mp4' in cname or 'm4a' in cname) and hasattr(audio, 'tags') and 'covr' in audio.tags:
+                covr = audio.tags['covr']
+                if isinstance(covr, list) and covr:
+                    return bytes(covr[0])
+        except Exception:
+            return None
+        return None
+
+    def _extract_lyrics_text(self, audio, path):
+        # From tags
+        try:
+            if getattr(audio, 'tags', None):
+                for k, v in audio.tags.items():
+                    key = str(k).lower()
+                    if 'lyric' in key or 'uslt' in key or key.endswith('©lyr'):
+                        try:
+                            return v.text if hasattr(v, 'text') else (v[0] if isinstance(v, list) else str(v))
+                        except Exception:
+                            return str(v)
+        except Exception:
+            pass
+        # From sidecar
+        try:
+            stem = os.path.splitext(os.path.basename(path))[0]
+            base_dir = os.path.dirname(path)
+            candidates = [
+                os.path.join(base_dir, f"{stem}{self.settings.get('lyrics_ext', '.lrc')}"),
+                os.path.join(base_dir, self.settings.get('lyrics_subdir', 'Lyrics'), f"{stem}{self.settings.get('lyrics_ext', '.lrc')}")
+            ]
+            for p in candidates:
+                if os.path.exists(p):
+                    with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                        return f.read()
+        except Exception:
+            pass
+        return ''
+
+    def _fmt_size(self, n):
+        for unit in ['B','KB','MB','GB','TB']:
+            if n < 1024.0:
+                return f"{n:.0f} {unit}"
+            n /= 1024.0
+        return f"{n:.0f} PB"
+
+    def _fmt_mtime(self, ts):
+        import datetime as _dt
+        try:
+            return _dt.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            return ''
 
 
 if __name__ == "__main__":
