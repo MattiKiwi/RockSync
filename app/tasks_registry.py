@@ -16,6 +16,18 @@ def get_tasks():
             "bin_deps": [],
         },
         {
+            "id": "sort_by_artist",
+            "label": "Sort Folders by Artist",
+            "script": SCRIPTS_DIR / "sort_by_artist.py",
+            "args": [
+                {"key": "--source", "label": "Source folder", "type": "path", "default": str(ROOT)},
+                {"key": "--separator", "label": "Separator (Artist - Album)", "type": "text", "default": " - "},
+                {"key": "--dry-run", "label": "Dry run", "type": "bool", "default": False},
+            ],
+            "py_deps": [],
+            "bin_deps": [],
+        },
+        {
             "id": "flac_cover_resize",
             "label": "Resize FLAC Front Covers",
             "script": SCRIPTS_DIR / "embedd_resize.py",
@@ -130,4 +142,3 @@ def get_tasks():
             "bin_deps": ["ffmpeg"],
         },
     ]
-
