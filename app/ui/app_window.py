@@ -5,7 +5,7 @@ import uuid
 from PySide6.QtCore import Qt, QProcess
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QTabWidget, QListWidget, QListWidgetItem,
+    QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem, QStackedWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QFormLayout, QLineEdit,
     QSpinBox, QCheckBox, QComboBox, QPlainTextEdit, QFileDialog, QMessageBox, QDialog
 )
@@ -40,55 +40,112 @@ class AppWindow(QMainWindow):
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        layout = QHBoxLayout(central)
 
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, 1)
+        # Preload tasks for quick actions and consistency
+        try:
+            self.tasks = get_tasks()
+        except Exception:
+            self.tasks = []
 
-        # Tasks tab
-        self.run_tab = QWidget()
-        self.tabs.addTab(self.run_tab, "Tasks")
-        self._build_run_tab(self.run_tab)
+        # Sidebar navigation (Spotify/iTunes-like)
+        self.nav = QListWidget()
+        self.nav.setAlternatingRowColors(False)
+        self.nav.setMaximumWidth(220)
+        self.nav.setMinimumWidth(180)
+        self.nav.setSpacing(2)
+        self.nav.setUniformItemSizes(True)
+        layout.addWidget(self.nav)
 
-        # Explorer tab
-        self.explore_tab = QWidget()
-        self.tabs.addTab(self.explore_tab, "Explorer")
-        ex_layout = QVBoxLayout(self.explore_tab)
+        # Stacked pages
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack, 1)
+
+        # Pages: build in preferred user flow order
+        # Library (Explorer)
+        self.explore_tab = QWidget(); ex_layout = QVBoxLayout(self.explore_tab)
         self.explorer = ExplorerPane(self, self.explore_tab)
         ex_layout.addWidget(self.explorer)
+        self.stack.addWidget(self.explore_tab)
 
-        # Tracks tab
-        self.tracks_tab = QWidget()
-        self.tabs.addTab(self.tracks_tab, "Tracks")
-        tr_layout = QVBoxLayout(self.tracks_tab)
-        self.tracks = TracksPane(self, self.tracks_tab)
-        tr_layout.addWidget(self.tracks)
-
-        # On Device tab
-        self.device_tab = QWidget()
-        self.tabs.addTab(self.device_tab, "On Device")
-        dv_layout = QVBoxLayout(self.device_tab)
+        # Device
+        self.device_tab = QWidget(); dv_layout = QVBoxLayout(self.device_tab)
         self.device_explorer = DeviceExplorerPane(self, self.device_tab)
         dv_layout.addWidget(self.device_explorer)
+        self.stack.addWidget(self.device_tab)
 
-        # Sync tab
-        self.sync_tab = QWidget()
-        self.tabs.addTab(self.sync_tab, "Sync")
-        sy_layout = QVBoxLayout(self.sync_tab)
+        # Tracks
+        self.tracks_tab = QWidget(); tr_layout = QVBoxLayout(self.tracks_tab)
+        self.tracks = TracksPane(self, self.tracks_tab)
+        tr_layout.addWidget(self.tracks)
+        self.stack.addWidget(self.tracks_tab)
+
+        # Sync
+        self.sync_tab = QWidget(); sy_layout = QVBoxLayout(self.sync_tab)
         self.sync = SyncPane(self, self.sync_tab)
         sy_layout.addWidget(self.sync)
+        self.stack.addWidget(self.sync_tab)
 
-        # Rockbox tab
-        self.rockbox_tab = QWidget()
-        self.tabs.addTab(self.rockbox_tab, "Rockbox")
-        rb_layout = QVBoxLayout(self.rockbox_tab)
+        # Rockbox
+        self.rockbox_tab = QWidget(); rb_layout = QVBoxLayout(self.rockbox_tab)
         self.rockbox = RockboxPane(self, self.rockbox_tab)
         rb_layout.addWidget(self.rockbox)
+        self.stack.addWidget(self.rockbox_tab)
 
-        # Settings tab
+        # Settings
         self.settings_tab = QWidget()
-        self.tabs.addTab(self.settings_tab, "Settings")
         self._build_settings_tab(self.settings_tab)
+        self.stack.addWidget(self.settings_tab)
+
+        # Tasks (Advanced)
+        self.run_tab = QWidget()
+        self._build_run_tab(self.run_tab)
+        self.stack.addWidget(self.run_tab)
+
+        # Populate navigation list
+        def add_header(text):
+            it = QListWidgetItem(text)
+            it.setFlags(Qt.NoItemFlags)
+            it.setData(Qt.UserRole, None)
+            self.nav.addItem(it)
+
+        def add_page(text, page_index):
+            it = QListWidgetItem(text)
+            it.setData(Qt.UserRole, int(page_index))
+            self.nav.addItem(it)
+
+        add_header("Library")
+        add_page("Library", 0)
+        add_page("Device", 1)
+        add_page("Tracks", 2)
+        add_page("Sync", 3)
+        add_page("Rockbox", 4)
+        add_page("Settings", 5)
+        add_header("Advanced")
+        add_page("Tasks (Advanced)", 6)
+
+        def on_nav_changed():
+            it = self.nav.currentItem()
+            if not it:
+                return
+            idx = it.data(Qt.UserRole)
+            if idx is None:
+                # Jump to next selectable item
+                ci = self.nav.currentRow()
+                # Move down until a selectable item
+                for j in range(ci + 1, self.nav.count()):
+                    if self.nav.item(j).flags() & Qt.ItemIsEnabled:
+                        self.nav.setCurrentRow(j)
+                        return
+                return
+            self.stack.setCurrentIndex(int(idx))
+
+        self.nav.currentItemChanged.connect(lambda _c, _p: on_nav_changed())
+        # Select first real page
+        for i in range(self.nav.count()):
+            if self.nav.item(i).data(Qt.UserRole) is not None:
+                self.nav.setCurrentRow(i)
+                break
 
         self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
 
@@ -137,16 +194,33 @@ class AppWindow(QMainWindow):
         self.set_lastfm = QLineEdit(self.settings.get("lastfm_key", ""))
         form.addRow("Last.fm API key", self.set_lastfm)
 
+        # Advanced block (hidden by default)
+        # Toggleable advanced options block
+        self.advanced_group = QGroupBox("Advanced Options")
+        adv_form = QFormLayout(self.advanced_group)
+
         self.debug_cb = QCheckBox("Enable verbose debug logging (writes to app/debug.log)")
         self.debug_cb.setChecked(bool(self.settings.get("debug", False)))
-        form.addRow("Debug", self.debug_cb)
+        adv_form.addRow("Debug", self.debug_cb)
 
         # Dummy Rockbox device (for testing)
         self.set_dummy_device = QLineEdit(self.settings.get("dummy_device_path", ""))
-        form.addRow("Dummy device path", self.set_dummy_device)
+        adv_form.addRow("Dummy device path", self.set_dummy_device)
         self.dummy_enable_cb = QCheckBox("Enable dummy device in selectors")
         self.dummy_enable_cb.setChecked(bool(self.settings.get("dummy_device_enabled", False)))
-        form.addRow("Dummy device", self.dummy_enable_cb)
+        adv_form.addRow("Dummy device", self.dummy_enable_cb)
+        # Toggle button
+        adv_toggle = QPushButton("Show Advanced Options")
+        adv_toggle.setCheckable(True)
+        adv_toggle.setChecked(False)
+        def _toggle_adv():
+            vis = adv_toggle.isChecked()
+            self.advanced_group.setVisible(vis)
+            adv_toggle.setText("Hide Advanced Options" if vis else "Show Advanced Options")
+        adv_toggle.toggled.connect(_toggle_adv)
+        v.addWidget(adv_toggle)
+        self.advanced_group.setVisible(False)
+        v.addWidget(self.advanced_group)
 
         # Theme selector
         theme_options = ['system'] + list_theme_files()
@@ -223,7 +297,11 @@ class AppWindow(QMainWindow):
         layout.addLayout(left, 0)
         left.addWidget(QLabel("Tasks"))
         self.task_list = QListWidget(); left.addWidget(self.task_list, 1)
-        self.tasks = get_tasks()
+        # Ensure tasks list exists
+        try:
+            self.tasks = self.tasks if hasattr(self, 'tasks') else get_tasks()
+        except Exception:
+            self.tasks = []
         for t in self.tasks:
             QListWidgetItem(t["label"], self.task_list)
         self.task_list.currentRowChanged.connect(self.on_task_select)

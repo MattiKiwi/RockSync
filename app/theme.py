@@ -93,6 +93,25 @@ def apply_theme(app: QApplication, theme_spec: str):
         background: {palette['selection_bg']};
     }}
     QTabWidget::pane {{ border: 0; }}
+    /* Sidebar navigation */
+    QListWidget {{
+        background: {palette['bg']};
+        border-right: 1px solid rgba(0,0,0,0.1);
+        padding: 8px 0;
+    }}
+    QListWidget::item {{
+        padding: 10px 14px;
+        margin: 2px 8px;
+        border-radius: 6px;
+    }}
+    QListWidget::item:selected {{
+        background: {palette['selection_bg']};
+        color: {palette['selection_fg']};
+    }}
+    QListWidget::item:!enabled {{
+        color: {palette['muted']};
+        margin-top: 14px;
+    }}
     QTreeView, QTableView {{
         gridline-color: rgba(0,0,0,0.1);
         selection-background-color: {palette['selection_bg']};
