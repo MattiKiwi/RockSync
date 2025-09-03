@@ -1,95 +1,98 @@
 import os
 import threading
-import tkinter as tk
-from tkinter import ttk, filedialog
+import queue
 from logging_utils import ui_log
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QFileDialog, QTableWidget, QTableWidgetItem
+)
 
 
-class TracksPane(ttk.Frame):
+class TracksPane(QWidget):
     def __init__(self, controller, parent):
         super().__init__(parent)
         self.controller = controller
+        self._queue = queue.Queue()
         self._build_ui()
 
     def _build_ui(self):
-        # Make this pane responsive within its tab
-        self.grid(sticky="nsew")
-        self.rowconfigure(1, weight=1)
-        self.columnconfigure(0, weight=1)
+        root = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Folder:"))
+        self.path_entry = QLineEdit(self.controller.settings.get("music_root", ""))
+        top.addWidget(self.path_entry, 1)
+        b = QPushButton("Browse"); b.clicked.connect(self._browse); top.addWidget(b)
+        b2 = QPushButton("Use Music Root"); b2.clicked.connect(self._use_root); top.addWidget(b2)
+        b3 = QPushButton("Scan"); b3.clicked.connect(self.scan); top.addWidget(b3)
+        root.addLayout(top)
 
-        top = ttk.Frame(self)
-        top.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
-        ttk.Label(top, text="Folder:").pack(side="left")
-        self.path_entry = ttk.Entry(top, width=70)
-        self.path_entry.pack(side="left", padx=4, fill="x", expand=True)
-        self.path_entry.insert(0, self.controller.settings.get("music_root"))
-        ttk.Button(top, text="Browse", command=self._browse).pack(side="left")
-        ttk.Button(top, text="Use Music Root", command=self._use_root).pack(side="left", padx=4)
-        ttk.Button(top, text="Scan", command=self.scan).pack(side="left", padx=4)
+        self.cols = ("artist", "album", "title", "track", "format", "lyrics", "cover", "duration", "path")
+        self.table = QTableWidget(0, len(self.cols))
+        self.table.setHorizontalHeaderLabels([c.title() for c in self.cols])
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        root.addWidget(self.table, 1)
 
-        cols = ("artist", "album", "title", "track", "format", "lyrics", "cover", "duration", "path")
-        # List frame to hold tree + scrollbar with proper resize
-        list_frame = ttk.Frame(self)
-        list_frame.grid(row=1, column=0, sticky="nsew")
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
+        self.status_label = QLabel("")
+        root.addWidget(self.status_label)
 
-        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
-        for c in cols:
-            self.tree.heading(c, text=c.title())
-            self.tree.column(c, width=120 if c != "path" else 400, anchor="w")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
-        yscroll.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=yscroll.set)
-        # Auto-stretch the Path column on resize
-        self.tree.bind('<Configure>', self._on_tree_resize)
-
-        self.scan_status = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.scan_status).grid(row=2, column=0, sticky="w", padx=8, pady=(4, 8))
+        # Timer to flush background queue to UI
+        self.flush_timer = QTimer(self)
+        self.flush_timer.setInterval(100)
+        self.flush_timer.timeout.connect(self._drain_queue)
 
     def _browse(self):
-        path = filedialog.askdirectory()
+        path = QFileDialog.getExistingDirectory(self, "Select folder", self.path_entry.text() or os.getcwd())
         if path:
-            self.path_entry.delete(0, 'end')
-            self.path_entry.insert(0, path)
+            self.path_entry.setText(path)
 
     def _use_root(self):
-        self.path_entry.delete(0, 'end')
-        self.path_entry.insert(0, self.controller.settings.get('music_root'))
+        self.path_entry.setText(self.controller.settings.get('music_root', ''))
 
     def scan(self):
-        folder = self.path_entry.get().strip()
+        folder = self.path_entry.text().strip()
         if not folder or not os.path.isdir(folder):
             return
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-        self.scan_status.set("Scanning...")
+        self.table.setRowCount(0)
+        self.status_label.setText("Scanning...")
         ui_log('tracks_scan_start', folder=folder)
 
         def worker():
             try:
-                from mutagen import File as MFile
+                from mutagen import File as MFile  # noqa: F401
             except Exception as e:
-                self._after_status(f"mutagen not installed: {e}")
+                self._queue.put(("status", f"mutagen not installed: {e}"))
                 return
             exts = {".flac", ".mp3", ".m4a"}
             count = 0
-            for root, _, files in os.walk(folder):
+            for rootd, _, files in os.walk(folder):
                 for name in files:
                     if os.path.splitext(name)[1].lower() not in exts:
                         continue
-                    path = os.path.join(root, name)
+                    path = os.path.join(rootd, name)
                     info = self._extract_info(path)
-                    self.master.after(0, lambda i=info: self._insert_row(i))
+                    self._queue.put(("row", info))
                     count += 1
-            self._after_status(f"Done. {count} files.")
-            ui_log('tracks_scan_end', folder=folder, count=count)
+            self._queue.put(("status", f"Done. {count} files."))
+            self._queue.put(("end", count))
 
         threading.Thread(target=worker, daemon=True).start()
+        self.flush_timer.start()
 
-    def _after_status(self, text):
-        self.master.after(0, lambda: self.scan_status.set(text))
+    def _drain_queue(self):
+        try:
+            while True:
+                kind, payload = self._queue.get_nowait()
+                if kind == 'row':
+                    self._insert_row(payload)
+                elif kind == 'status':
+                    self.status_label.setText(str(payload))
+                elif kind == 'end':
+                    self.flush_timer.stop()
+                    ui_log('tracks_scan_end', folder=self.path_entry.text().strip(), count=int(payload))
+        except queue.Empty:
+            pass
 
     def _extract_info(self, path):
         artist = album = title = track = ""
@@ -135,7 +138,7 @@ class TracksPane(ttk.Frame):
                         has_cover = True
                 try:
                     if getattr(audio, 'tags', None):
-                        for k in audio.tags.keys():
+                        for k in getattr(audio, 'tags', {}).keys():
                             key = str(k).lower()
                             if 'lyric' in key or 'uslt' in key:
                                 has_lyrics = True
@@ -159,16 +162,8 @@ class TracksPane(ttk.Frame):
         }
 
     def _insert_row(self, info):
-        values = (info['artist'], info['album'], info['title'], info['track'], info['format'], info['lyrics'], info['cover'], info['duration'], info['path'])
-        self.tree.insert('', 'end', values=values)
-
-    def _on_tree_resize(self, event):
-        try:
-            total = self.tree.winfo_width()
-            # Fixed widths for non-path columns
-            fixed_cols = ['artist','album','title','track','format','lyrics','cover','duration']
-            fixed = sum(self.tree.column(c, width=None) for c in fixed_cols)
-            path_w = max(200, total - fixed - 24)
-            self.tree.column('path', width=path_w)
-        except Exception:
-            pass
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        vals = [info['artist'], info['album'], info['title'], info['track'], info['format'], info['lyrics'], info['cover'], info['duration'], info['path']]
+        for col, val in enumerate(vals):
+            self.table.setItem(row, col, QTableWidgetItem(str(val)))

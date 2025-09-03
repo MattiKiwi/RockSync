@@ -1,6 +1,5 @@
 import json
 from core import CONFIG_PATH
-import tkinter.messagebox as messagebox
 
 DEFAULT_SETTINGS = {
     "music_root": str(CONFIG_PATH.parents[1]),
@@ -34,8 +33,5 @@ def save_settings(settings) -> bool:
             json.dump(settings, f, indent=2)
         return True
     except Exception as e:
-        try:
-            messagebox.showerror("Error", f"Could not save settings: {e}")
-        except Exception:
-            pass
+        # UI layer is responsible for showing errors
         return False

@@ -1,94 +1,89 @@
 import os
 import io
-import tkinter as tk
-from tkinter import ttk
 from logging_utils import ui_log
+from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QPushButton,
+    QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit, QFileDialog, QMenu
+)
 
 
-class ExplorerPane(ttk.Frame):
+class ExplorerPane(QWidget):
     def __init__(self, controller, parent):
         super().__init__(parent)
         self.controller = controller
-        self.cover_image_ref = None
+        self.cover_pixmap = None
         self._build_ui()
 
     def _build_ui(self):
-        # Make this pane responsive within its tab
-        self.grid(sticky="nsew")
-        self.rowconfigure(1, weight=1)
-        self.columnconfigure(0, weight=1)   # list area grows
-        self.columnconfigure(1, weight=0)   # detail panel keeps natural size
+        root = QVBoxLayout(self)
 
-        top = ttk.Frame(self)
-        top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
-        ttk.Label(top, text="Path:").pack(side="left")
-        self.explorer_path = ttk.Entry(top, width=70)
-        self.explorer_path.pack(side="left", padx=4, fill="x", expand=True)
-        self.explorer_path.insert(0, self.controller.settings.get("music_root"))
-        ttk.Button(top, text="Use Music Root", command=lambda: self._set_path(self.controller.settings.get('music_root'))).pack(side="left", padx=4)
-        ttk.Button(top, text="Browse", command=lambda: self.controller.browse_dir(self.explorer_path)).pack(side="left")
-        ttk.Button(top, text="Up", command=self.go_up).pack(side="left", padx=4)
-        ttk.Button(top, text="Refresh", command=lambda: self.navigate(self.explorer_path.get())).pack(side="left")
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Path:"))
+        self.explorer_path = QLineEdit(self.controller.settings.get("music_root", ""))
+        top.addWidget(self.explorer_path, 1)
+        use_btn = QPushButton("Use Music Root")
+        use_btn.clicked.connect(lambda: self._set_path(self.controller.settings.get('music_root')))
+        top.addWidget(use_btn)
+        browse_btn = QPushButton("Browse")
+        browse_btn.clicked.connect(self._browse)
+        top.addWidget(browse_btn)
+        up_btn = QPushButton("Up")
+        up_btn.clicked.connect(self.go_up)
+        top.addWidget(up_btn)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(lambda: self.navigate(self.explorer_path.text()))
+        top.addWidget(refresh_btn)
+        root.addLayout(top)
 
-        # Horizontal PanedWindow for resizable split
-        pw = ttk.Panedwindow(self, orient='horizontal')
-        pw.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=8, pady=(0, 8))
-        # List frame with its own grid to keep scrollbar aligned
-        list_frame = ttk.Frame(pw)
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
-        pw.add(list_frame, weight=3)
+        splitter = QSplitter(Qt.Horizontal)
+        root.addWidget(splitter, 1)
 
-        cols = ("name", "type", "size", "modified", "actions")
-        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
-        for c, w in zip(cols, (300, 80, 100, 160, 50)):
-            self.tree.heading(c, text=c.title())
-            self.tree.column(c, width=w, anchor="w")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
-        yscroll.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=yscroll.set)
-        self.tree.bind("<Double-1>", self.on_open)
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
-        self.tree.bind("<Button-1>", self.on_click)
-        self.tree.bind("<Button-3>", self.on_right_click)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(5)
+        self.tree.setHeaderLabels(["Name", "Type", "Size", "Modified", "Actions"])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.itemDoubleClicked.connect(self._on_item_open)
+        self.tree.itemSelectionChanged.connect(self._on_item_select)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_context_menu)
+        splitter.addWidget(self.tree)
 
-        detail = ttk.Frame(pw)
-        detail.columnconfigure(0, weight=1)
-        pw.add(detail, weight=2)
-        self.cover_label = ttk.Label(detail, text="No cover", anchor="center")
-        self.cover_label.grid(row=0, column=0, sticky="n", padx=4, pady=4)
-        ttk.Label(detail, text="Metadata").grid(row=1, column=0, sticky="w", padx=4)
-        self.meta_text = tk.Text(detail, width=40, height=12, wrap="word")
-        self.meta_text.grid(row=2, column=0, sticky="nsew", padx=4)
-        ttk.Label(detail, text="Lyrics (preview)").grid(row=3, column=0, sticky="w", padx=4, pady=(8, 0))
-        self.lyrics_text = tk.Text(detail, width=40, height=12, wrap="word")
-        self.lyrics_text.grid(row=4, column=0, sticky="nsew", padx=4)
-        detail.rowconfigure(2, weight=1)
-        detail.rowconfigure(4, weight=1)
-        # Auto-adjust name column on resize
-        self.tree.bind('<Configure>', self._on_tree_resize)
+        right = QWidget()
+        rlayout = QVBoxLayout(right)
+        self.cover_label = QLabel("No cover")
+        self.cover_label.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        rlayout.addWidget(self.cover_label)
+        rlayout.addWidget(QLabel("Metadata"))
+        self.meta_text = QTextEdit()
+        self.meta_text.setReadOnly(True)
+        rlayout.addWidget(self.meta_text, 1)
+        rlayout.addWidget(QLabel("Lyrics (preview)"))
+        self.lyrics_text = QTextEdit()
+        self.lyrics_text.setReadOnly(True)
+        rlayout.addWidget(self.lyrics_text, 1)
+        splitter.addWidget(right)
 
-        self.navigate(self.explorer_path.get())
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
 
-    def _on_tree_resize(self, event):
-        try:
-            total = self.tree.winfo_width()
-            # Fetch fixed columns current widths
-            fixed = sum(self.tree.column(c, width=None) for c in ('type', 'size', 'modified', 'actions'))
-            name_w = max(120, total - fixed - 24)
-            self.tree.column('name', width=name_w)
-        except Exception:
-            pass
+        self.navigate(self.explorer_path.text())
 
-    # Navigation
+    # Navigation helpers
+    def _browse(self):
+        path = QFileDialog.getExistingDirectory(self, "Select folder", self.explorer_path.text() or os.getcwd())
+        if path:
+            self._set_path(path)
+
     def _set_path(self, path):
-        self.explorer_path.delete(0, 'end')
-        self.explorer_path.insert(0, path)
+        if not path:
+            return
+        self.explorer_path.setText(path)
         self.navigate(path)
 
     def go_up(self):
-        cur = self.explorer_path.get().strip()
+        cur = self.explorer_path.text().strip()
         parent = os.path.dirname(cur.rstrip(os.sep)) or cur
         if parent and os.path.isdir(parent):
             self._set_path(parent)
@@ -97,9 +92,8 @@ class ExplorerPane(ttk.Frame):
         path = os.path.abspath(path)
         if not os.path.isdir(path):
             return
-        self.explorer_path.delete(0, 'end'); self.explorer_path.insert(0, path)
-        for i in self.tree.get_children():
-            self.tree.delete(i)
+        self.explorer_path.setText(path)
+        self.tree.clear()
         try:
             with os.scandir(path) as it:
                 dirs, files = [], []
@@ -112,84 +106,72 @@ class ExplorerPane(ttk.Frame):
                         continue
             dirs.sort(key=lambda x: x[0].lower()); files.sort(key=lambda x: x[0].lower())
             for name, typ, size, mtime, full in dirs + files:
-                actions = '…' if typ == 'Folder' else ''
-                self.tree.insert('', 'end', values=(name, typ, self._fmt_size(size), self._fmt_mtime(mtime), actions), tags=(full,))
+                item = QTreeWidgetItem([
+                    name,
+                    typ,
+                    self._fmt_size(size),
+                    self._fmt_mtime(mtime),
+                    '…' if typ == 'Folder' else ''
+                ])
+                item.setData(0, Qt.UserRole, full)
+                self.tree.addTopLevelItem(item)
         except Exception:
             pass
 
     # Events
-    def on_open(self, event):
-        item = self.tree.focus()
-        if not item:
-            return
-        name = self.tree.item(item, 'values')[0]
-        base = self.explorer_path.get().strip()
-        full = os.path.join(base, name)
+    def _on_item_open(self, item, column):
+        full = item.data(0, Qt.UserRole)
         if os.path.isdir(full):
             self.navigate(full)
         else:
             self.show_info(full)
 
-    def on_select(self, event):
-        item = self.tree.focus()
-        if not item:
+    def _on_item_select(self):
+        items = self.tree.selectedItems()
+        if not items:
             return
-        name, typ = self.tree.item(item, 'values')[:2]
-        base = self.explorer_path.get().strip()
-        full = os.path.join(base, name)
+        full = items[0].data(0, Qt.UserRole)
         if os.path.isfile(full):
             self.show_info(full)
 
-    def on_click(self, event):
-        row_id = self.tree.identify_row(event.y)
-        col_id = self.tree.identify_column(event.x)
-        if not row_id:
+    def _on_context_menu(self, pos: QPoint):
+        item = self.tree.itemAt(pos)
+        if not item:
             return
-        idx = int(col_id.replace('#', '')) - 1
-        if idx != 4:  # actions column
-            return
-        vals = self.tree.item(row_id, 'values')
-        if not vals:
-            return
-        name, typ = vals[0], vals[1]
+        typ = item.text(1)
         if typ != 'Folder':
             return
-        folder_path = os.path.join(self.explorer_path.get().strip(), name)
-        self.controller._show_folder_menu(folder_path, event)
-        ui_log('explorer_actions_click', folder_path=folder_path)
-        return 'break'
-
-    def on_right_click(self, event):
-        row_id = self.tree.identify_row(event.y)
-        if not row_id:
-            return
-        vals = self.tree.item(row_id, 'values')
-        if not vals:
-            return
-        name, typ = vals[0], vals[1]
-        if typ != 'Folder':
-            return
-        folder_path = os.path.join(self.explorer_path.get().strip(), name)
-        self.controller._show_folder_menu(folder_path, event)
+        folder_path = item.data(0, Qt.UserRole)
+        menu = QMenu(self)
+        any_added = False
+        for task in self.controller.tasks:
+            if self.controller.task_accepts_folder(task):
+                any_added = True
+                action = menu.addAction(f"Use: {task['label']}")
+                action.triggered.connect(lambda _, t=task: self.controller.open_quick_task(t, folder_path))
+        if not any_added:
+            a = menu.addAction("No folder tasks found")
+            a.setEnabled(False)
+        menu.exec_(self.tree.viewport().mapToGlobal(pos))
         ui_log('explorer_right_click', folder_path=folder_path)
 
     # Info panel
     def show_info(self, path):
-        self.cover_label.configure(text="No cover", image='')
-        self.cover_image_ref = None
-        self.meta_text.delete('1.0', 'end')
-        self.lyrics_text.delete('1.0', 'end')
+        self.cover_label.setText("No cover")
+        self.cover_label.setPixmap(QPixmap())
+        self.meta_text.clear()
+        self.lyrics_text.clear()
 
         ext = os.path.splitext(path)[1].lower()
         supported = {'.flac', '.mp3', '.m4a', '.alac', '.aac', '.ogg', '.opus', '.wav'}
         if ext not in supported:
-            self.meta_text.insert('end', f"Selected: {os.path.basename(path)}\nNot a supported audio file.")
+            self.meta_text.setPlainText(f"Selected: {os.path.basename(path)}\nNot a supported audio file.")
             return
         try:
             from mutagen import File as MFile
             audio = MFile(path)
         except Exception as e:
-            self.meta_text.insert('end', f"Error reading file: {e}")
+            self.meta_text.setPlainText(f"Error reading file: {e}")
             return
 
         meta_lines = []
@@ -219,16 +201,16 @@ class ExplorerPane(ttk.Frame):
                 meta_lines.insert(0, f"Duration: {secs//60}:{secs%60:02d}")
         except Exception:
             pass
-        self.meta_text.insert('end', "\n".join(meta_lines) or "No tags found.")
+        self.meta_text.setPlainText("\n".join(meta_lines) or "No tags found.")
 
         # Lyrics
         lyrics_text = self._extract_lyrics_text(audio, path)
         if lyrics_text:
             if len(lyrics_text) > 5000:
                 lyrics_text = lyrics_text[:5000] + '\n…'
-            self.lyrics_text.insert('end', lyrics_text)
+            self.lyrics_text.setPlainText(lyrics_text)
         else:
-            self.lyrics_text.insert('end', "No lyrics found.")
+            self.lyrics_text.setPlainText("No lyrics found.")
 
         # Cover
         img_bytes = self._extract_cover_bytes(audio)
@@ -241,15 +223,31 @@ class ExplorerPane(ttk.Frame):
                 except Exception:
                     img_bytes = None
         if img_bytes:
-            try:
-                from PIL import Image, ImageTk
-                im = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-                im.thumbnail((300, 300))
-                photo = ImageTk.PhotoImage(im)
-                self.cover_label.configure(image=photo, text='')
-                self.cover_image_ref = photo
-            except Exception:
-                self.cover_label.configure(text="Cover present (install Pillow to display)")
+            if self._set_cover_from_pillow(img_bytes):
+                return
+            pix = QPixmap()
+            if pix.loadFromData(img_bytes):
+                self.cover_label.setPixmap(pix.scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.cover_label.setText("")
+            else:
+                self.cover_label.setText("Cover present (install Pillow to display)")
+
+    def _set_cover_from_pillow(self, img_bytes: bytes) -> bool:
+        try:
+            from PIL import Image
+            im = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+            im.thumbnail((300, 300))
+            data = io.BytesIO()
+            im.save(data, format='PNG')
+            data.seek(0)
+            pix = QPixmap()
+            if pix.loadFromData(data.getvalue()):
+                self.cover_label.setPixmap(pix)
+                self.cover_label.setText("")
+                return True
+        except Exception:
+            pass
+        return False
 
     def _extract_cover_bytes(self, audio):
         try:
