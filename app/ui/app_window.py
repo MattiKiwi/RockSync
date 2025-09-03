@@ -16,6 +16,9 @@ from logging_utils import setup_logging, ui_log
 from tasks_registry import get_tasks
 from ui.explorer_pane import ExplorerPane
 from ui.tracks_pane import TracksPane
+from ui.device_pane import DeviceExplorerPane
+from ui.sync_pane import SyncPane
+from ui.rockbox_pane import RockboxPane
 from theme import apply_theme
 from theme_loader import list_theme_files
 
@@ -61,6 +64,27 @@ class AppWindow(QMainWindow):
         self.tracks = TracksPane(self, self.tracks_tab)
         tr_layout.addWidget(self.tracks)
 
+        # On Device tab
+        self.device_tab = QWidget()
+        self.tabs.addTab(self.device_tab, "On Device")
+        dv_layout = QVBoxLayout(self.device_tab)
+        self.device_explorer = DeviceExplorerPane(self, self.device_tab)
+        dv_layout.addWidget(self.device_explorer)
+
+        # Sync tab
+        self.sync_tab = QWidget()
+        self.tabs.addTab(self.sync_tab, "Sync")
+        sy_layout = QVBoxLayout(self.sync_tab)
+        self.sync = SyncPane(self, self.sync_tab)
+        sy_layout.addWidget(self.sync)
+
+        # Rockbox tab
+        self.rockbox_tab = QWidget()
+        self.tabs.addTab(self.rockbox_tab, "Rockbox")
+        rb_layout = QVBoxLayout(self.rockbox_tab)
+        self.rockbox = RockboxPane(self, self.rockbox_tab)
+        rb_layout.addWidget(self.rockbox)
+
         # Settings tab
         self.settings_tab = QWidget()
         self.tabs.addTab(self.settings_tab, "Settings")
@@ -84,6 +108,13 @@ class AppWindow(QMainWindow):
         h.addWidget(self.set_music_root, 1)
         b = QPushButton("Browse"); b.clicked.connect(lambda: self._browse_dir_into(self.set_music_root)); h.addWidget(b)
         form.addRow("Music root", music_row)
+
+        # Device root row
+        dev_row = QWidget(); h2 = QHBoxLayout(dev_row); h2.setContentsMargins(0,0,0,0)
+        self.set_device_root = QLineEdit(self.settings.get("device_root", str(ROOT)))
+        h2.addWidget(self.set_device_root, 1)
+        bdev = QPushButton("Browse"); bdev.clicked.connect(lambda: self._browse_dir_into(self.set_device_root)); h2.addWidget(bdev)
+        form.addRow("Device root", dev_row)
 
         self.set_lyrics_subdir = QLineEdit(self.settings.get("lyrics_subdir", "Lyrics"))
         form.addRow("Lyrics subfolder", self.set_lyrics_subdir)
@@ -110,6 +141,13 @@ class AppWindow(QMainWindow):
         self.debug_cb.setChecked(bool(self.settings.get("debug", False)))
         form.addRow("Debug", self.debug_cb)
 
+        # Dummy Rockbox device (for testing)
+        self.set_dummy_device = QLineEdit(self.settings.get("dummy_device_path", ""))
+        form.addRow("Dummy device path", self.set_dummy_device)
+        self.dummy_enable_cb = QCheckBox("Enable dummy device in selectors")
+        self.dummy_enable_cb.setChecked(bool(self.settings.get("dummy_device_enabled", False)))
+        form.addRow("Dummy device", self.dummy_enable_cb)
+
         # Theme selector
         theme_options = ['system'] + list_theme_files()
         if 'theme_file' not in self.settings and 'theme' in self.settings:
@@ -124,6 +162,7 @@ class AppWindow(QMainWindow):
 
     def on_save_settings(self):
         self.settings["music_root"] = self.set_music_root.text()
+        self.settings["device_root"] = self.set_device_root.text()
         self.settings["lyrics_subdir"] = self.set_lyrics_subdir.text()
         self.settings["lyrics_ext"] = self.set_lyrics_ext.text()
         self.settings["cover_size"] = self.set_cover_size.text()
@@ -132,6 +171,8 @@ class AppWindow(QMainWindow):
         self.settings["genius_token"] = self.set_genius.text()
         self.settings["lastfm_key"] = self.set_lastfm.text()
         self.settings["debug"] = bool(self.debug_cb.isChecked())
+        self.settings["dummy_device_path"] = self.set_dummy_device.text()
+        self.settings["dummy_device_enabled"] = bool(self.dummy_enable_cb.isChecked())
         self.settings["theme_file"] = self.theme_box.currentText()
         if save_settings(self.settings):
             self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
@@ -144,6 +185,7 @@ class AppWindow(QMainWindow):
     def on_reload_settings(self):
         self.settings = load_settings()
         self.set_music_root.setText(self.settings.get('music_root', ''))
+        self.set_device_root.setText(self.settings.get('device_root', ''))
         self.set_lyrics_subdir.setText(self.settings.get('lyrics_subdir', 'Lyrics'))
         self.set_lyrics_ext.setText(self.settings.get('lyrics_ext', '.lrc'))
         self.set_cover_size.setText(self.settings.get('cover_size', '100x100'))
@@ -152,6 +194,8 @@ class AppWindow(QMainWindow):
         self.set_genius.setText(self.settings.get('genius_token', ''))
         self.set_lastfm.setText(self.settings.get('lastfm_key', ''))
         self.debug_cb.setChecked(bool(self.settings.get('debug', False)))
+        self.set_dummy_device.setText(self.settings.get('dummy_device_path', ''))
+        self.dummy_enable_cb.setChecked(bool(self.settings.get('dummy_device_enabled', False)))
         self.theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
         self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
         self._reconfigure_logging()

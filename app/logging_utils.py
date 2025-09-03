@@ -7,6 +7,8 @@ import warnings
 from pathlib import Path
 from core import ROOT
 
+_STREAM_REDIRECTED = False
+
 
 def setup_logging(settings: dict, session_id: str) -> logging.Logger:
     log_level = logging.DEBUG if settings.get("debug") else logging.INFO
@@ -34,7 +36,9 @@ def setup_logging(settings: dict, session_id: str) -> logging.Logger:
     file_fmt = logging.Formatter("%(asctime)s [%(levelname)s] [%(name)s] %(module)s:%(lineno)d | %(message)s | session=%(session)s")
 
     # Console
-    sh = logging.StreamHandler(sys.stdout)
+    # Always log to the real stdout to avoid recursion if sys.stdout gets
+    # redirected to a logging-backed stream in a previous setup.
+    sh = logging.StreamHandler(getattr(sys, "__stdout__", sys.stdout))
     sh.setLevel(log_level)
     sh.setFormatter(console_fmt)
     sh.addFilter(sess_filter)
@@ -94,11 +98,14 @@ def setup_logging(settings: dict, session_id: str) -> logging.Logger:
                 self.logger.log(self.level, self._buf.strip())
             self._buf = ""
 
-    try:
-        sys.stdout = StreamToLogger(logging.getLogger("stdout"), logging.INFO)
-        sys.stderr = StreamToLogger(logging.getLogger("stderr"), logging.ERROR)
-    except Exception:
-        pass
+    global _STREAM_REDIRECTED
+    if not _STREAM_REDIRECTED:
+        try:
+            sys.stdout = StreamToLogger(logging.getLogger("stdout"), logging.INFO)
+            sys.stderr = StreamToLogger(logging.getLogger("stderr"), logging.ERROR)
+            _STREAM_REDIRECTED = True
+        except Exception:
+            pass
 
     app_logger = logging.getLogger("RockSyncGUI")
     app_logger.setLevel(log_level)
@@ -112,4 +119,3 @@ def ui_log(event: str, **data):
     except Exception:
         payload = str(data)
     logging.getLogger("RockSyncGUI.UI").info(payload)
-

@@ -4,9 +4,10 @@ import queue
 from logging_utils import ui_log
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QFileDialog, QTableWidget, QTableWidgetItem
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTableWidget, QTableWidgetItem, QComboBox
 )
+from rockbox_utils import list_rockbox_devices
 
 
 class TracksPane(QWidget):
@@ -19,11 +20,9 @@ class TracksPane(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self)
         top = QHBoxLayout()
-        top.addWidget(QLabel("Folder:"))
-        self.path_entry = QLineEdit(self.controller.settings.get("music_root", ""))
-        top.addWidget(self.path_entry, 1)
-        b = QPushButton("Browse"); b.clicked.connect(self._browse); top.addWidget(b)
-        b2 = QPushButton("Use Music Root"); b2.clicked.connect(self._use_root); top.addWidget(b2)
+        top.addWidget(QLabel("Device:"))
+        self.device_combo = QComboBox(); top.addWidget(self.device_combo)
+        rb = QPushButton("Refresh"); rb.clicked.connect(self._refresh_devices); top.addWidget(rb)
         b3 = QPushButton("Scan"); b3.clicked.connect(self.scan); top.addWidget(b3)
         root.addLayout(top)
 
@@ -41,17 +40,24 @@ class TracksPane(QWidget):
         self.flush_timer = QTimer(self)
         self.flush_timer.setInterval(100)
         self.flush_timer.timeout.connect(self._drain_queue)
+        self._refresh_devices()
 
-    def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, "Select folder", self.path_entry.text() or os.getcwd())
-        if path:
-            self.path_entry.setText(path)
+    def _refresh_devices(self):
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        devices = list_rockbox_devices()
+        for d in devices:
+            label = d.get('label') or d.get('mountpoint')
+            mp = d.get('mountpoint')
+            self.device_combo.addItem(f"{label} ({mp})", mp)
+        self.device_combo.blockSignals(False)
 
-    def _use_root(self):
-        self.path_entry.setText(self.controller.settings.get('music_root', ''))
+    def _selected_music(self):
+        mp = self.device_combo.currentData()
+        return mp.rstrip('/\\') + '/Music' if mp else ''
 
     def scan(self):
-        folder = self.path_entry.text().strip()
+        folder = self._selected_music()
         if not folder or not os.path.isdir(folder):
             return
         self.table.setRowCount(0)
@@ -90,7 +96,7 @@ class TracksPane(QWidget):
                     self.status_label.setText(str(payload))
                 elif kind == 'end':
                     self.flush_timer.stop()
-                    ui_log('tracks_scan_end', folder=self.path_entry.text().strip(), count=int(payload))
+                    ui_log('tracks_scan_end', folder=folder, count=int(payload))
         except queue.Empty:
             pass
 

@@ -1,5 +1,8 @@
 {
   "music_root": "/run/media/matti/Archive Drive/Music/iPod_Downsampled/New",
+  "device_root": "/run/media/matti/Archive Drive/Music/Device Test",
+  "dummy_device_path": "/run/media/matti/Archive Drive/Music/Device Test",
+  "dummy_device_enabled": true,
   "lyrics_subdir": "Lyrics",
   "lyrics_ext": ".lrc",
   "cover_size": "100x100",
@@ -8,6 +11,6 @@
   "genius_token": "",
   "lastfm_key": "",
   "debug": true,
-  "theme_file": "modern-light.css",
+  "theme_file": "retro-98.css",
   "theme": "retro98"
 }

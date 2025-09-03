@@ -7,7 +7,7 @@ This repo now includes a lightweight Tkinter app that exposes your existing scri
 
 ### Run
 
-- Requirements: Python 3.9+ (Tkinter included), optional Python deps depending on task: `mutagen`, `Pillow`, `requests`. Some tasks also require `ffmpeg` in PATH.
+- Requirements: Python 3.9+ (Tkinter included), optional Python deps depending on task: `mutagen`, `Pillow`, `requests`, `psutil`. Some tasks also require `ffmpeg` in PATH.
 
 - Start the app from the repo root:
 
