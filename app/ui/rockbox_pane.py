@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTreeWidget, QTreeWidgetItem,
     QGroupBox, QFormLayout, QLineEdit, QCheckBox
 )
+from rockbox_utils import list_rockbox_devices
 
 
 def _fmt_size(n: int) -> str:
@@ -44,8 +45,8 @@ class RockboxPane(QWidget):
 
         # Devices list
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(6)
-        self.tree.setHeaderLabels(["Mountpoint", "Label", "FS", "Device", "Capacity", "Free"])
+        self.tree.setColumnCount(8)
+        self.tree.setHeaderLabels(["Mountpoint", "Name", "Label", "Model", "FS", "Device", "Capacity", "Free"])
         self.tree.setAlternatingRowColors(True)
         root.addWidget(self.tree, 1)
 
@@ -72,27 +73,8 @@ class RockboxPane(QWidget):
             self.status.setText("Idle")
 
     def scan_now(self):
-        # Use detector from scripts/, ensuring project root is on sys.path
         try:
-            from core import ROOT  # lazy import to avoid cycles
-            root_str = str(ROOT)
-            if root_str not in sys.path:
-                sys.path.insert(0, root_str)
-        except Exception:
-            pass
-
-        try:
-            from scripts.rockbox_detector import RockboxDetector  # type: ignore
-        except Exception as e:
-            # Fall back to message if import fails
-            self.status.setText("Detector not available (install psutil?)")
-            self.tree.clear()
-            return
-
-        try:
-            det = RockboxDetector()
-            devices_map = det.scan_once()
-            devices = list(devices_map.values())
+            devices = list_rockbox_devices()
             self._populate(devices)
             if devices:
                 self.status.setText(f"Found {len(devices)} device(s)")
@@ -105,19 +87,30 @@ class RockboxPane(QWidget):
     def _populate(self, devices):
         self.tree.clear()
         for dev in devices:
-            # Access by attribute; fall back to dict if needed
-            try:
+            # Accept both dicts and objects
+            if isinstance(dev, dict):
+                mountpoint = dev.get('mountpoint', '')
+                name = dev.get('name') or ''
+                label = dev.get('label') or ''
+                model = dev.get('display_model') or dev.get('model') or dev.get('target') or ''
+                fstype = dev.get('fstype', '')
+                device = dev.get('device', '')
+                total = dev.get('total_bytes', 0)
+                free = dev.get('free_bytes', 0)
+            else:
                 mountpoint = getattr(dev, 'mountpoint', '')
+                name = getattr(dev, 'name', '')
                 label = getattr(dev, 'label', '') or ''
+                model = getattr(dev, 'display_model', '') or getattr(dev, 'target', '')
                 fstype = getattr(dev, 'fstype', '')
                 device = getattr(dev, 'device', '')
                 total = getattr(dev, 'total_bytes', 0)
                 free = getattr(dev, 'free_bytes', 0)
-            except Exception:
-                continue
             item = QTreeWidgetItem([
                 mountpoint,
+                str(name or ''),
                 str(label),
+                str(model or ''),
                 fstype,
                 device,
                 _fmt_size(int(total) if total else 0),
