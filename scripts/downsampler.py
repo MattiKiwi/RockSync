@@ -1,12 +1,75 @@
 import os
 import argparse
 import subprocess
+import json
 from multiprocessing import Pool, cpu_count
 
 DEFAULT_SOURCE_DIR = "E:/Music/iPod_Downsampled/New"
-FFMPEG_PATH = "ffmpeg"  # Ensure ffmpeg is installed and in PATH
+FFMPEG_PATH = "ffmpeg"   # Ensure ffmpeg is installed and in PATH
+FFPROBE_PATH = "ffprobe" # Ensure ffprobe is installed and in PATH
+
+
+def probe_audio_info(file_path):
+    """Return (sample_rate:int|None, bits_per_sample:int|None, sample_fmt:str|None).
+    Uses ffprobe; on failure returns (None, None, None).
+    """
+    try:
+        cmd = [
+            FFPROBE_PATH,
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=sample_rate,bits_per_sample,sample_fmt",
+            "-of", "json",
+            file_path,
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        data = json.loads(out.decode("utf-8", errors="ignore"))
+        streams = data.get("streams") or []
+        if not streams:
+            return None, None, None
+        st = streams[0]
+        sr = st.get("sample_rate")
+        try:
+            sr = int(sr) if sr is not None else None
+        except Exception:
+            sr = None
+        bps = st.get("bits_per_sample")
+        try:
+            bps = int(bps) if bps is not None else None
+        except Exception:
+            bps = None
+        fmt = st.get("sample_fmt")
+        return sr, bps, fmt
+    except Exception:
+        return None, None, None
+
+
+def needs_downsample(file_path):
+    """True if the file appears not to be 16-bit / 44.1kHz.
+    If probing fails, return True to be safe (ensures consistent target).
+    """
+    sr, bps, fmt = probe_audio_info(file_path)
+    # If we can't determine, proceed with downsampling to ensure target
+    if sr is None and bps is None and fmt is None:
+        return True
+    if sr is not None and sr != 44100:
+        return True
+    # Prefer bits_per_sample when available
+    if bps is not None:
+        if bps > 16:
+            return True
+    else:
+        # Fall back to sample_fmt heuristic
+        if fmt and not str(fmt).lower().startswith("s16"):
+            return True
+    # Already 16-bit/44.1kHz
+    return False
 
 def downsample_flac(file_path):
+    # Skip if not required
+    if not needs_downsample(file_path):
+        print(f"⏭ Skipped (already 16-bit/44.1kHz): {file_path}")
+        return
     temp_output = file_path + ".tmp.flac"
     command = [
         FFMPEG_PATH,

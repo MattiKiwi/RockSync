@@ -15,6 +15,12 @@ def resize_with_aspect_ratio(image, max_size):
 def resize_and_promote_cover(flac_path, max_size):
     try:
         audio = FLAC(flac_path)
+
+        # If a type 3 (front cover) already exists, skip this file entirely.
+        if any(p.type == 3 for p in audio.pictures):
+            print(f"⏭  Skipping (already has type 3 cover): {os.path.basename(flac_path)}")
+            return
+
         new_pictures = []
         promoted = False
 
