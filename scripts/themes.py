@@ -229,7 +229,12 @@ def show_theme(target: str, themeid: str) -> Dict[str, str]:
 
 def _stream_download(url: str, out_path: str) -> str:
     import math
-    from tqdm import tqdm  # optional progress bar
+    import sys
+    # tqdm is optional; and we only show it on a real TTY to avoid writing to stderr in GUIs.
+    try:
+        from tqdm import tqdm  # type: ignore
+    except Exception:
+        tqdm = None  # type: ignore
     with requests.get(url, headers=HEADERS, stream=True, timeout=60) as r:
         r.raise_for_status()
         total = int(r.headers.get("Content-Length", "0"))
@@ -237,14 +242,18 @@ def _stream_download(url: str, out_path: str) -> str:
         filename = re.findall(r"[^/\\]+\.zip", url) or [f"theme_{int(time.time())}.zip"]
         dest = os.path.join(out_path, filename[0])
         chunk = 1024 * 64
-        if total:
-            with open(dest, "wb") as f, tqdm(total=total, unit="B", unit_scale=True) as p:
+        show_progress = bool(total) and (tqdm is not None) and getattr(sys.stderr, "isatty", lambda: False)()
+        if show_progress:
+            with open(dest, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, file=sys.stderr) as p:  # type: ignore
                 for buf in r.iter_content(chunk_size=chunk):
-                    if buf: f.write(buf); p.update(len(buf))
+                    if buf:
+                        f.write(buf)
+                        p.update(len(buf))
         else:
             with open(dest, "wb") as f:
                 for buf in r.iter_content(chunk_size=chunk):
-                    if buf: f.write(buf)
+                    if buf:
+                        f.write(buf)
         return dest
 
 def download_theme(target: str, themeid: str, out_dir: str) -> str:

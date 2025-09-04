@@ -135,8 +135,9 @@ class RockboxPane(QWidget):
         tv = QVBoxLayout(theme_group)
         trow = QHBoxLayout()
         trow.addWidget(QLabel("Target:"))
-        self.theme_target = QLineEdit()
-        trow.addWidget(self.theme_target)
+        self.theme_target_combo = QComboBox()
+        self._init_theme_targets()
+        trow.addWidget(self.theme_target_combo)
         trow.addWidget(QLabel("Search:"))
         self.theme_search = QLineEdit()
         trow.addWidget(self.theme_search, 1)
@@ -187,6 +188,65 @@ class RockboxPane(QWidget):
 
         # Initial scan
         self.scan_now()
+
+    # ---------- Theme target helpers ----------
+    def _init_theme_targets(self):
+        try:
+            self.theme_target_combo.blockSignals(True)
+        except Exception:
+            pass
+        try:
+            self.theme_target_combo.clear()
+            items = []
+            if themes_api is not None and hasattr(themes_api, 'COMMON_TARGETS'):
+                try:
+                    targets = getattr(themes_api, 'COMMON_TARGETS') or {}
+                except Exception:
+                    targets = {}
+                for k, v in targets.items():
+                    items.append((str(k).lower(), f"{k} — {v}"))
+            if not items:
+                items = [
+                    ('ipodvideo', 'ipodvideo — iPod Video (5G/5.5G)'),
+                    ('ipod6g', 'ipod6g — iPod Classic (6G/7G)'),
+                    ('ipod4g', 'ipod4g — iPod 4G'),
+                    ('ipodnano2g', 'ipodnano2g — iPod Nano 2G'),
+                    ('sansaclipzip', 'sansaclipzip — Sansa Clip Zip'),
+                ]
+            for key, label in items:
+                self.theme_target_combo.addItem(label, key)
+        except Exception:
+            pass
+        try:
+            self.theme_target_combo.blockSignals(False)
+        except Exception:
+            pass
+
+    def _select_theme_target(self, tgt: str):
+        tgt = (tgt or '').strip().lower()
+        if not tgt:
+            return
+        # Try to find existing entry by data
+        try:
+            for i in range(self.theme_target_combo.count()):
+                if str(self.theme_target_combo.itemData(i)).lower() == tgt:
+                    self.theme_target_combo.setCurrentIndex(i)
+                    return
+            # Not found: insert at top
+            self.theme_target_combo.insertItem(0, tgt, tgt)
+            self.theme_target_combo.setCurrentIndex(0)
+        except Exception:
+            pass
+
+    def _current_theme_target(self) -> str:
+        try:
+            data = self.theme_target_combo.currentData()
+            if data:
+                return str(data).strip().lower()
+            # fallback
+            return str(self.theme_target_combo.currentText()).split(' — ', 1)[0].strip().lower()
+        except Exception:
+            return 'ipodvideo'
 
     def _toggle_auto(self, state):
         if self.auto_cb.isChecked():
@@ -264,7 +324,7 @@ class RockboxPane(QWidget):
             # If utils gave a target, prefer it
             if isinstance(dev, dict) and dev.get('target'):
                 tgt = str(dev.get('target')).strip().lower()
-            self.theme_target.setText(tgt or "")
+            self._select_theme_target(tgt)
         except Exception:
             pass
         self._refresh_configs()
@@ -340,7 +400,7 @@ class RockboxPane(QWidget):
         if themes_api is None:
             self.status.setText("Themes module missing. See scripts/themes.py and install requests/bs4.")
             return
-        target = self.theme_target.text().strip() or 'ipodvideo'
+        target = self._current_theme_target() or 'ipodvideo'
         search = self.theme_search.text().strip() or None
         self.status.setText("Loading themes…")
         try:
@@ -385,7 +445,7 @@ class RockboxPane(QWidget):
         urls = list(getattr(t, 'preview_urls', []) or [])
         if (not urls) and themes_api is not None:
             try:
-                info = themes_api.show_theme(self.theme_target.text().strip(), getattr(t, 'id', ''))
+                info = themes_api.show_theme(self._current_theme_target(), getattr(t, 'id', ''))
                 pv = info.get('previews') if isinstance(info, dict) else None
                 if pv:
                     urls = pv.splitlines()
@@ -454,7 +514,7 @@ class RockboxPane(QWidget):
             self.status.setText("Select a theme first")
             return
         t = it.data(Qt.UserRole)
-        target = self.theme_target.text().strip() or 'ipodvideo'
+        target = self._current_theme_target() or 'ipodvideo'
         mp = getattr(self, '_current_mount', '')
         if not mp:
             self.status.setText("Select a device first")
