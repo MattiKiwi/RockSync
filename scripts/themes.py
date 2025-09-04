@@ -55,9 +55,6 @@ COMMON_TARGETS = {
 class Theme:
     id: str
     name: str
-    author: Optional[str]
-    downloads: Optional[int]
-    rating: Optional[str]
     page_url: str
     preview_urls: List[str]
 
@@ -70,7 +67,20 @@ def _parse_list_page(html: str, target: str) -> List[Theme]:
     soup = BeautifulSoup(html, "html.parser")
     themes: List[Theme] = []
 
+    # Map themeid -> name from header cells which contain the title links.
+    name_map: Dict[str, str] = {}
+    for ha in soup.select('th a[href*="themeid="]'):
+        href = ha.get("href", "")
+        m = re.search(r"themeid=(\d+)", href)
+        if not m:
+            continue
+        tid = m.group(1)
+        text = ha.get_text(strip=True)
+        if text and text.lower() not in ("download", "rating:"):
+            name_map[tid] = text
+
     # The list page has a grid/table of themes. We’ll look for links that include themeid=
+    # but avoid picking the "Download" button/link or label text as the name.
     for a in soup.select('a[href*="themeid="]'):
         href = a.get("href", "")
         m = re.search(r"themeid=(\d+)", href)
@@ -78,8 +88,54 @@ def _parse_list_page(html: str, target: str) -> List[Theme]:
             continue
         themeid = m.group(1)
         # Try to extract name & surrounding metadata
-        name = a.get_text(strip=True) or f"Theme {themeid}"
-        card = a.find_parent(["div", "tr"])  # heuristics for card/row
+        raw_text = a.get_text(strip=True)
+        card = a.find_parent(["td", "div", "tr"])  # heuristics for card/row; prefer td when present
+
+        # Heuristic: among all links for this theme id inside the card, pick the one
+        # whose text looks like a theme name (not 'Download', not labels like 'Rating:').
+        name = name_map.get(themeid)
+        if card:
+            candidates = []
+            for link in card.select(f'a[href*="themeid={themeid}"]'):
+                lh = link.get("href", "").lower()
+                text = (link.get("title") or link.get_text(strip=True) or "").strip()
+                if not text:
+                    continue
+                tl = text.lower()
+                if tl in ("download", "rating:") or ":" in tl:
+                    continue
+                if "download" in lh:
+                    continue
+                # Prefer longer, more descriptive names
+                score = len(text)
+                # Bonus if it has spaces (often real names)
+                if " " in text:
+                    score += 5
+                candidates.append((score, text))
+            if candidates and not name:
+                candidates.sort(reverse=True)
+                name = candidates[0][1]
+
+        # If still not found, consider current anchor if it looks like a name
+        if not name:
+            tl = (raw_text or "").lower()
+            if tl and tl != "download" and tl != "rating:" and ":" not in tl and "download" not in href.lower():
+                name = raw_text
+
+        # Final fallbacks: headings inside the card (but avoid label-like text ending with ':')
+        if not name and card:
+            h = card.find(["h1", "h2", "h3", "strong", "b"])
+            if h:
+                ht = h.get_text(strip=True)
+                if ht and not ht.endswith(":") and ht.lower() not in ("download", "rating"):
+                    name = ht
+
+        if not name:
+            name = f"Theme {themeid}"
+        author = None
+        downloads = None
+        rating = None
+        previews = []
         author = None
         downloads = None
         rating = None
@@ -88,23 +144,25 @@ def _parse_list_page(html: str, target: str) -> List[Theme]:
         if card:
             # Author / stats heuristics
             txt = card.get_text(" ", strip=True)
-            ma = re.search(r"Author:\s*(.+?)(?:\s{2,}|$)", txt, re.I)
+            ma = re.search(r"(?:Author|Submitter):\s*(.+?)(?:\s{2,}|$)", txt, re.I)
             if ma: author = ma.group(1).strip()
-            md = re.search(r"Downloads?:\s*([0-9,]+)", txt, re.I)
+            # Match either "Downloads: 1234" or "Downloaded 1234 times"
+            md = re.search(r"Downloads?:\s*([0-9,]+)", txt, re.I) or re.search(r"Downloaded\s*([0-9,]+)\s*times", txt, re.I)
             if md:
                 try: downloads = int(md.group(1).replace(",", ""))
                 except: pass
             mr = re.search(r"Rating:\s*([0-9.]+\/[0-9]+|[★☆]+)", txt, re.I)
             if mr: rating = mr.group(1).strip()
 
-            # preview images (thumbnails)
+            # preview images (thumbnails). Avoid rating icons (filled.png/empty.png)
+            # by restricting to images under the /themes/ path.
             for img in card.select("img"):
                 src = img.get("src")
-                if src and ("preview" in src or "thumb" in src or src.endswith((".jpg", ".png", ".gif"))):
+                if src and "/themes/" in src and src.lower().endswith((".jpg", ".png", ".gif")):
                     previews.append(urljoin(BASE, src))
 
         page_url = urljoin(BASE, f"index.php?{urlencode({'themeid': themeid, 'target': target})}")
-        themes.append(Theme(themeid, name, author, downloads, rating, page_url, list(dict.fromkeys(previews))))
+        themes.append(Theme(themeid, name, page_url, list(dict.fromkeys(previews))))
 
     # De-duplicate by id (some pages repeat anchors)
     uniq: Dict[str, Theme] = {}
@@ -118,7 +176,7 @@ def list_themes(target: str, search: Optional[str] = None) -> List[Theme]:
     themes = _parse_list_page(html, target)
     if search:
         q = search.lower()
-        themes = [t for t in themes if q in t.name.lower() or (t.author and q in t.author.lower())]
+        themes = [t for t in themes if q in t.name.lower()]
     return themes
 
 def _parse_theme_page(html: str, target: str, themeid: str) -> Dict[str, str]:
@@ -190,11 +248,19 @@ def _stream_download(url: str, out_path: str) -> str:
         return dest
 
 def download_theme(target: str, themeid: str, out_dir: str) -> str:
-    info = show_theme(target, themeid)
-    dl = info.get("download_url", "")
+    #info = show_theme(target, themeid)
+    #dl = info.get("download_url", "")
+    dl = "https://themes.rockbox.org/download.php?themeid=" + themeid
+    print(dl)
     if not dl:
         raise RuntimeError("Could not find a download link on the theme page.")
     return _stream_download(dl, out_dir)
+
+def download_and_install_theme(target: str, themeid: str, device_dest: str):
+    theme_dest = download_theme(target, themeid, "./tmp")
+    install_theme_zip(theme_dest, device_dest)
+    os.remove(theme_dest)
+    os.rmdir("./tmp")
 
 def install_theme_zip(zip_path: str, mountpoint: str) -> None:
     """
@@ -258,9 +324,9 @@ def main():
             return
         for t in themes:
             line = f"#{t.id}  {t.name}"
-            if t.author: line += f"  — {t.author}"
-            if t.downloads: line += f"  [{t.downloads} dl]"
-            if t.rating: line += f"  ★ {t.rating}"
+            #if t.author: line += f"  — {t.author}"
+            #if t.downloads: line += f"  [{t.downloads} dl]"
+            #if t.rating: line += f"  ★ {t.rating}"
             print(line)
         return
 
@@ -295,4 +361,5 @@ def main():
                 except: pass
 
 if __name__ == "__main__":
-    main()
+    #main()
+    download_and_install_theme("ipodvideo", "3852", "/run/media/matti/Archive Drive/Music/Device Test")

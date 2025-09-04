@@ -8,10 +8,28 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QInputDialog
 )
 from rockbox_utils import list_rockbox_devices
+# Ensure project root is importable so `scripts.*` resolves when running from app/
+try:
+    from core import ROOT  # type: ignore
+    _root_str = str(ROOT)
+    if _root_str not in sys.path:
+        sys.path.insert(0, _root_str)
+except Exception:
+    pass
 try:
     from ui.rockbox_configurator import RockboxConfiguratorDialog
 except Exception:
     RockboxConfiguratorDialog = None  # type: ignore
+try:
+    # Optional themes API
+    from scripts import themes as themes_api  # type: ignore
+except Exception:
+    themes_api = None  # type: ignore
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None  # type: ignore
+from PySide6.QtGui import QPixmap
 
 
 def _fmt_size(n: int) -> str:
@@ -112,6 +130,51 @@ class RockboxPane(QWidget):
         pv.addLayout(info_form)
         root.addWidget(prof_group)
 
+        # Themes browser
+        theme_group = QGroupBox("Themes (themes.rockbox.org)")
+        tv = QVBoxLayout(theme_group)
+        trow = QHBoxLayout()
+        trow.addWidget(QLabel("Target:"))
+        self.theme_target = QLineEdit()
+        trow.addWidget(self.theme_target)
+        trow.addWidget(QLabel("Search:"))
+        self.theme_search = QLineEdit()
+        trow.addWidget(self.theme_search, 1)
+        self.theme_list_btn = QPushButton("Load List")
+        trow.addWidget(self.theme_list_btn)
+        tv.addLayout(trow)
+
+        # List + preview side by side
+        list_row = QHBoxLayout()
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem, QSpacerItem, QSizePolicy
+        self.theme_list = QListWidget()
+        list_row.addWidget(self.theme_list, 2)
+        # preview panel
+        prev_panel = QVBoxLayout()
+        self.theme_preview = QLabel("Preview")
+        self.theme_preview.setAlignment(Qt.AlignCenter)
+        self.theme_preview.setMinimumSize(200, 150)
+        self.theme_preview.setStyleSheet("background: #111; color: #aaa; border: 1px solid #333;")
+        prev_panel.addWidget(self.theme_preview, 1)
+        # Buttons
+        pbtns = QHBoxLayout()
+        self.theme_open_btn = QPushButton("Open Page")
+        self.theme_install_btn = QPushButton("Install to Device")
+        pbtns.addWidget(self.theme_open_btn)
+        pbtns.addWidget(self.theme_install_btn)
+        pbtns.addStretch(1)
+        prev_panel.addLayout(pbtns)
+        list_row.addLayout(prev_panel, 3)
+        tv.addLayout(list_row)
+
+        # Wire actions
+        self.theme_list_btn.clicked.connect(self._themes_refresh)
+        self.theme_list.itemSelectionChanged.connect(self._themes_on_select)
+        self.theme_open_btn.clicked.connect(self._themes_open_page)
+        self.theme_install_btn.clicked.connect(self._themes_install_selected)
+
+        root.addWidget(theme_group)
+
         # Wire profile actions
         #self.btn_set_active.clicked.connect(self._set_active_config)
         self.btn_edit.clicked.connect(self._edit_selected_config)
@@ -195,6 +258,15 @@ class RockboxPane(QWidget):
         self.sum_free.setText(_fmt_size(free))
         self.sum_label.setText(str(label))
         self.db_root.setText("/.rockbox")
+        # Suggest theme target from detection
+        try:
+            tgt = str(model).strip().lower()
+            # If utils gave a target, prefer it
+            if isinstance(dev, dict) and dev.get('target'):
+                tgt = str(dev.get('target')).strip().lower()
+            self.theme_target.setText(tgt or "")
+        except Exception:
+            pass
         self._refresh_configs()
 
     # ---------------- Config helpers ----------------
@@ -262,6 +334,144 @@ class RockboxPane(QWidget):
         saveb.clicked.connect(_save)
         cancelb.clicked.connect(dlg.reject)
         dlg.exec()
+
+    # ---------------- Themes browser ----------------
+    def _themes_refresh(self):
+        if themes_api is None:
+            self.status.setText("Themes module missing. See scripts/themes.py and install requests/bs4.")
+            return
+        target = self.theme_target.text().strip() or 'ipodvideo'
+        search = self.theme_search.text().strip() or None
+        self.status.setText("Loading themes…")
+        try:
+            themes = themes_api.list_themes(target, search=search)
+        except Exception:
+            self.status.setText("Failed to load themes (network?)")
+            return
+        self.theme_list.clear()
+        for t in themes:
+            # t is scripts.themes.Theme dataclass
+            name = getattr(t, 'name', None) or f"Theme {getattr(t,'id','')}"
+            author = getattr(t, 'author', None)
+            did = getattr(t, 'id', '')
+            dl = getattr(t, 'downloads', None)
+            # Prefer Name — Author (#id) [downloads]
+            text = name
+            if author:
+                text += f" — {author}"
+            if did:
+                text += f"  (#{did})"
+            if dl:
+                text += f"  [{dl} dl]"
+            from PySide6.QtWidgets import QListWidgetItem
+            it = QListWidgetItem(text)
+            it.setData(Qt.UserRole, t)
+            # Tooltip with URL
+            try:
+                it.setToolTip(getattr(t, 'page_url', '') or '')
+            except Exception:
+                pass
+            self.theme_list.addItem(it)
+        self.status.setText(f"Loaded {self.theme_list.count()} theme(s)")
+        self.theme_preview.clear(); self.theme_preview.setText("Preview")
+
+    def _themes_on_select(self):
+        self.theme_preview.clear(); self.theme_preview.setText("Preview")
+        it = self.theme_list.currentItem()
+        if not it:
+            return
+        t = it.data(Qt.UserRole)
+        # Try list previews first; else fetch from page
+        urls = list(getattr(t, 'preview_urls', []) or [])
+        if (not urls) and themes_api is not None:
+            try:
+                info = themes_api.show_theme(self.theme_target.text().strip(), getattr(t, 'id', ''))
+                pv = info.get('previews') if isinstance(info, dict) else None
+                if pv:
+                    urls = pv.splitlines()
+            except Exception:
+                urls = []
+        if not urls:
+            return
+        # Fetch first preview image
+        url = urls[0]
+        for url in urls:
+            if "https://themes.rockbox.org/themes/" in url:
+                break
+        if requests is None:
+            self.theme_preview.setText("Install requests to load previews")
+            return
+        try:
+            # Use same headers as scripts/themes.py to avoid 403
+            headers = {}
+            try:
+                if themes_api is not None and hasattr(themes_api, 'HEADERS'):
+                    headers.update(getattr(themes_api, 'HEADERS'))
+            except Exception:
+                pass
+            headers.setdefault('User-Agent', 'RockboxThemeGUI/1.0 (+personal use)')
+            ref = None
+            try:
+                ref = getattr(t, 'page_url', None)
+            except Exception:
+                ref = None
+            headers.setdefault('Referer', ref or 'https://themes.rockbox.org/')
+
+            r = requests.get(url, headers=headers, timeout=20)
+            r.raise_for_status()
+            pm = QPixmap()
+            if pm.loadFromData(r.content):
+                # scale while keeping aspect
+                w = max(240, self.theme_preview.width())
+                h = max(180, self.theme_preview.height())
+                self.theme_preview.setPixmap(pm.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                self.theme_preview.setText("Preview unsupported")
+        except Exception:
+            self.theme_preview.setText("Preview failed")
+
+    def _themes_open_page(self):
+        it = self.theme_list.currentItem()
+        if not it:
+            return
+        t = it.data(Qt.UserRole)
+        url = getattr(t, 'page_url', None)
+        if not url:
+            return
+        # Best-effort open using OS; fallback to status
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            self.status.setText(url)
+
+    def _themes_install_selected(self):
+        if themes_api is None:
+            self.status.setText("Themes module missing. See scripts/themes.py and install requests/bs4.")
+            return
+        it = self.theme_list.currentItem()
+        if not it:
+            self.status.setText("Select a theme first")
+            return
+        t = it.data(Qt.UserRole)
+        target = self.theme_target.text().strip() or 'ipodvideo'
+        mp = getattr(self, '_current_mount', '')
+        if not mp:
+            self.status.setText("Select a device first")
+            return
+        # Confirm
+        ret = QMessageBox.question(self, "Install Theme", f"Install '{getattr(t,'name','theme')}' to {mp}?\nThis will merge files into /.rockbox.")
+        if ret != QMessageBox.Yes:
+            return
+        try:
+            # Download a zip to temp and install
+            import tempfile, os as _os
+            with tempfile.TemporaryDirectory() as tmp:
+                zp = themes_api.download_theme(target, getattr(t, 'id', ''), tmp)
+                themes_api.install_theme_zip(zp, mp)
+            self.status.setText("Theme installed")
+        except Exception:
+            self.status.setText("Install failed (see logs)")
 
     # ---------------- Profiles manager ----------------
     def _rb_path(self) -> str:
