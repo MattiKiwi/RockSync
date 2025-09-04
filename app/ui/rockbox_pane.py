@@ -3,8 +3,9 @@ import sys
 from typing import Dict
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTreeWidget, QTreeWidgetItem,
-    QGroupBox, QFormLayout, QLineEdit, QCheckBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QGroupBox, QFormLayout, QLineEdit, QCheckBox, QComboBox, QPlainTextEdit, QDialog,
+    QFileDialog, QMessageBox, QInputDialog
 )
 from rockbox_utils import list_rockbox_devices
 
@@ -43,23 +44,74 @@ class RockboxPane(QWidget):
         self.auto_cb = QCheckBox("Auto refresh"); self.auto_cb.stateChanged.connect(self._toggle_auto); hdr.addWidget(self.auto_cb)
         root.addLayout(hdr)
 
-        # Devices list
-        self.tree = QTreeWidget()
-        self.tree.setColumnCount(8)
-        self.tree.setHeaderLabels(["Mountpoint", "Name", "Label", "Model", "FS", "Device", "Capacity", "Free"])
-        self.tree.setAlternatingRowColors(True)
-        root.addWidget(self.tree, 1)
+        # Device selector (dropdown)
+        sel_row = QHBoxLayout()
+        sel_row.addWidget(QLabel("Device:"))
+        self.device_combo = QComboBox()
+        sel_row.addWidget(self.device_combo, 1)
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.scan_now)
+        sel_row.addWidget(self.refresh_btn)
+        root.addLayout(sel_row)
 
-        # Future settings placeholder
-        grp = QGroupBox("Rockbox Settings (coming soon)")
-        form = QFormLayout(grp)
-        self.db_path = QLineEdit("/.rockbox")
-        self.db_path.setEnabled(False)
-        form.addRow("Config root on device", self.db_path)
-        self.transcode_preset = QLineEdit("mp3 192k aac he")
-        self.transcode_preset.setEnabled(False)
-        form.addRow("Transcode preset", self.transcode_preset)
-        root.addWidget(grp)
+        # Summary panel
+        sum_group = QGroupBox("Device Summary")
+        sum_form = QFormLayout(sum_group)
+        self.sum_name = QLabel("")
+        self.sum_model = QLabel("")
+        self.sum_cap = QLabel("")
+        self.sum_free = QLabel("")
+        self.sum_label = QLabel("")
+        sum_form.addRow("Name", self.sum_name)
+        sum_form.addRow("Model", self.sum_model)
+        sum_form.addRow("Capacity", self.sum_cap)
+        sum_form.addRow("Free", self.sum_free)
+        sum_form.addRow("Label", self.sum_label)
+        root.addWidget(sum_group)
+
+        # Profiles manager
+        prof_group = QGroupBox("Profiles (.cfg)")
+        pv = QVBoxLayout(prof_group)
+        row1 = QHBoxLayout()
+        self.cfg_combo = QComboBox()
+        row1.addWidget(self.cfg_combo, 1)
+        self.cfg_refresh_btn = QPushButton("Refresh")
+        self.cfg_refresh_btn.clicked.connect(self._refresh_configs)
+        row1.addWidget(self.cfg_refresh_btn)
+        pv.addLayout(row1)
+        row2 = QHBoxLayout()
+        self.btn_set_active = QPushButton("Set Active")
+        self.btn_edit = QPushButton("Edit…")
+        self.btn_new_from_current = QPushButton("New from Current")
+        self.btn_duplicate = QPushButton("Duplicate…")
+        self.btn_rename = QPushButton("Rename…")
+        self.btn_delete = QPushButton("Delete…")
+        row2.addWidget(self.btn_set_active)
+        row2.addWidget(self.btn_edit)
+        row2.addWidget(self.btn_new_from_current)
+        row2.addWidget(self.btn_duplicate)
+        row2.addWidget(self.btn_rename)
+        row2.addWidget(self.btn_delete)
+        row2.addStretch(1)
+        pv.addLayout(row2)
+        row3 = QHBoxLayout()
+        self.btn_import = QPushButton("Import…")
+        self.btn_export = QPushButton("Export…")
+        row3.addWidget(self.btn_import)
+        row3.addWidget(self.btn_export)
+        row3.addStretch(1)
+        pv.addLayout(row3)
+        root.addWidget(prof_group)
+
+        # Wire profile actions
+        self.btn_set_active.clicked.connect(self._set_active_config)
+        self.btn_edit.clicked.connect(self._edit_selected_config)
+        self.btn_new_from_current.clicked.connect(self._new_from_current)
+        self.btn_duplicate.clicked.connect(self._duplicate_selected)
+        self.btn_rename.clicked.connect(self._rename_selected)
+        self.btn_delete.clicked.connect(self._delete_selected)
+        self.btn_import.clicked.connect(self._import_config)
+        self.btn_export.clicked.connect(self._export_selected)
 
         # Initial scan
         self.scan_now()
@@ -75,45 +127,361 @@ class RockboxPane(QWidget):
     def scan_now(self):
         try:
             devices = list_rockbox_devices()
-            self._populate(devices)
+            self._devices = devices
+            self._populate_dropdown(devices)
             if devices:
                 self.status.setText(f"Found {len(devices)} device(s)")
             else:
                 self.status.setText("No Rockbox devices found")
         except Exception:
             self.status.setText("Detection error (see console/logs)")
-            self.tree.clear()
+            self._devices = []
+            self.device_combo.clear()
 
-    def _populate(self, devices):
-        self.tree.clear()
-        for dev in devices:
-            # Accept both dicts and objects
+    def _populate_dropdown(self, devices):
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        for idx, dev in enumerate(devices):
             if isinstance(dev, dict):
-                mountpoint = dev.get('mountpoint', '')
-                name = dev.get('name') or ''
-                label = dev.get('label') or ''
+                name = dev.get('name') or dev.get('label') or 'Device'
                 model = dev.get('display_model') or dev.get('model') or dev.get('target') or ''
-                fstype = dev.get('fstype', '')
-                device = dev.get('device', '')
-                total = dev.get('total_bytes', 0)
-                free = dev.get('free_bytes', 0)
             else:
-                mountpoint = getattr(dev, 'mountpoint', '')
-                name = getattr(dev, 'name', '')
-                label = getattr(dev, 'label', '') or ''
+                name = getattr(dev, 'name', '') or getattr(dev, 'label', '') or 'Device'
                 model = getattr(dev, 'display_model', '') or getattr(dev, 'target', '')
-                fstype = getattr(dev, 'fstype', '')
-                device = getattr(dev, 'device', '')
-                total = getattr(dev, 'total_bytes', 0)
-                free = getattr(dev, 'free_bytes', 0)
-            item = QTreeWidgetItem([
-                mountpoint,
-                str(name or ''),
-                str(label),
-                str(model or ''),
-                fstype,
-                device,
-                _fmt_size(int(total) if total else 0),
-                _fmt_size(int(free) if free else 0),
-            ])
-            self.tree.addTopLevelItem(item)
+            text = f"{name} — {model}" if model else name
+            self.device_combo.addItem(text, idx)
+        self.device_combo.blockSignals(False)
+        self.device_combo.currentIndexChanged.connect(self._on_device_selected)
+        if self.device_combo.count() > 0:
+            self.device_combo.setCurrentIndex(0)
+            self._on_device_selected(0)
+
+    def _on_device_selected(self, _idx):
+        if not getattr(self, '_devices', None):
+            return
+        idx = self.device_combo.currentData()
+        try:
+            dev = self._devices[idx]
+        except Exception:
+            return
+        # Extract fields
+        if isinstance(dev, dict):
+            self._current_mount = dev.get('mountpoint', '')
+            name = dev.get('name') or dev.get('label') or ''
+            model = dev.get('display_model') or dev.get('model') or dev.get('target') or ''
+            total = int(dev.get('total_bytes', 0) or 0)
+            free = int(dev.get('free_bytes', 0) or 0)
+            label = dev.get('label') or ''
+        else:
+            self._current_mount = getattr(dev, 'mountpoint', '')
+            name = getattr(dev, 'name', '') or getattr(dev, 'label', '') or ''
+            model = getattr(dev, 'display_model', '') or getattr(dev, 'target', '')
+            total = int(getattr(dev, 'total_bytes', 0) or 0)
+            free = int(getattr(dev, 'free_bytes', 0) or 0)
+            label = getattr(dev, 'label', '') or ''
+
+        self.sum_name.setText(str(name))
+        self.sum_model.setText(str(model))
+        self.sum_cap.setText(_fmt_size(total))
+        self.sum_free.setText(_fmt_size(free))
+        self.sum_label.setText(str(label))
+        self.db_root.setText("/.rockbox")
+        self._refresh_configs()
+
+    # ---------------- Config helpers ----------------
+    def _config_path(self) -> str:
+        mp = getattr(self, '_current_mount', '')
+        return (mp.rstrip('/\\') + '/.rockbox/config.cfg') if mp else ''
+
+    def _backup_config(self):
+        import datetime as _dt
+        path = self._config_path()
+        if not path:
+            self.status.setText("Select a device first")
+            return
+        try:
+            if not os.path.isfile(path):
+                # Nothing to back up; create empty config as baseline
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, 'a').close()
+            ts = _dt.datetime.now().strftime('%Y%m%d-%H%M%S')
+            backup = path + f'.bak-{ts}'
+            import shutil as _sh
+            _sh.copy2(path, backup)
+            self.status.setText(f"Backed up config.cfg → {os.path.basename(backup)}")
+        except Exception:
+            self.status.setText("Backup failed (see logs)")
+
+    def _open_config_editor(self):
+        path = self._config_path()
+        if not path:
+            self.status.setText("Select a device first")
+            return
+        # Lazy create parent dir
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            pass
+        # Read existing content
+        try:
+            try:
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+            except FileNotFoundError:
+                content = ''
+        except Exception:
+            content = ''
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit config.cfg")
+        v = QVBoxLayout(dlg)
+        edit = QPlainTextEdit(); edit.setPlainText(content)
+        v.addWidget(edit, 1)
+        row = QHBoxLayout(); row.addStretch(1)
+        saveb = QPushButton("Save"); cancelb = QPushButton("Cancel")
+        row.addWidget(cancelb); row.addWidget(saveb)
+        v.addLayout(row)
+
+        def _save():
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(edit.toPlainText())
+                self.status.setText("Saved config.cfg")
+                dlg.accept()
+            except Exception:
+                self.status.setText("Save failed (see logs)")
+        saveb.clicked.connect(_save)
+        cancelb.clicked.connect(dlg.reject)
+        dlg.exec()
+
+    # ---------------- Profiles manager ----------------
+    def _rb_path(self) -> str:
+        mp = getattr(self, '_current_mount', '')
+        return mp.rstrip('/\\') + '/.rockbox' if mp else ''
+
+    def _list_configs(self):
+        root = self._rb_path()
+        items = []
+        if not root:
+            return items
+        active_path = os.path.join(root, 'config.cfg')
+        try:
+            # search in /.rockbox and /.rockbox/configs
+            search = [root, os.path.join(root, 'configs')]
+            for base in search:
+                try:
+                    for name in os.listdir(base):
+                        if not name.lower().endswith('.cfg'):
+                            continue
+                        # skip theme cfgs under themes directory
+                        full = os.path.join(base, name)
+                        if os.path.isdir(full):
+                            continue
+                        rel = os.path.relpath(full, root)
+                        # Exclude theme cfgs in themes subdir
+                        if rel.replace('\\','/').startswith('themes/'):
+                            continue
+                        items.append({
+                            'name': name,
+                            'full': full,
+                            'rel': rel,
+                            'is_active': os.path.abspath(full) == os.path.abspath(active_path)
+                        })
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        # Ensure config.cfg appears even if directories are odd
+        if not any(i['rel'] == 'config.cfg' for i in items) and os.path.isfile(active_path):
+            items.insert(0, {
+                'name': 'config.cfg', 'full': active_path, 'rel': 'config.cfg', 'is_active': True
+            })
+        # sort with config.cfg first, then alpha
+        items.sort(key=lambda d: (0 if d['rel'] == 'config.cfg' else 1, d['rel'].lower()))
+        return items
+
+    def _refresh_configs(self):
+        items = self._list_configs()
+        self.cfg_combo.blockSignals(True)
+        self.cfg_combo.clear()
+        active_name = '(none)'
+        for idx, it in enumerate(items):
+            label = it['rel'] + ('  (active)' if it['is_active'] else '')
+            self.cfg_combo.addItem(label, it)
+            if it['is_active']:
+                active_name = it['rel']
+        self.cfg_combo.blockSignals(False)
+        self.active_cfg_label.setText(active_name)
+
+    def _current_cfg_item(self):
+        it = self.cfg_combo.currentData()
+        return it if isinstance(it, dict) else None
+
+    def _set_active_config(self):
+        it = self._current_cfg_item()
+        if not it:
+            return
+        root = self._rb_path()
+        dst = os.path.join(root, 'config.cfg')
+        src = it['full']
+        if os.path.abspath(src) == os.path.abspath(dst):
+            self.status.setText("Already active")
+            return
+        # Confirm overwrite
+        ret = QMessageBox.question(self, "Set Active Config", f"Replace config.cfg with {it['rel']}?")
+        if ret != QMessageBox.Yes:
+            return
+        try:
+            import shutil as _sh
+            # backup current config.cfg
+            if os.path.isfile(dst):
+                _sh.copy2(dst, dst + '.bak')
+            _sh.copy2(src, dst)
+            self.status.setText(f"Set active: {it['rel']}")
+            self._refresh_configs()
+        except Exception:
+            self.status.setText("Failed to set active (see logs)")
+
+    def _edit_selected_config(self):
+        it = self._current_cfg_item()
+        if not it:
+            return
+        self._open_text_editor(it['full'], title=f"Edit {it['rel']}")
+
+    def _new_from_current(self):
+        root = self._rb_path()
+        cur = os.path.join(root, 'config.cfg')
+        if not os.path.isfile(cur):
+            self.status.setText("No current config.cfg to copy")
+            return
+        name, ok = QInputDialog.getText(self, "New from Current", "New filename (e.g., configs/car.cfg):", text="configs/profile.cfg")
+        if not ok or not name.strip():
+            return
+        dst = os.path.join(root, name.strip())
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            import shutil as _sh
+            _sh.copy2(cur, dst)
+            self.status.setText(f"Created {name}")
+            self._refresh_configs()
+        except Exception:
+            self.status.setText("Failed to create profile")
+
+    def _duplicate_selected(self):
+        it = self._current_cfg_item()
+        if not it:
+            return
+        name, ok = QInputDialog.getText(self, "Duplicate Profile", "New filename:", text=it['rel'])
+        if not ok or not name.strip():
+            return
+        root = self._rb_path()
+        dst = os.path.join(root, name.strip())
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            import shutil as _sh
+            _sh.copy2(it['full'], dst)
+            self.status.setText(f"Duplicated to {name}")
+            self._refresh_configs()
+        except Exception:
+            self.status.setText("Failed to duplicate")
+
+    def _rename_selected(self):
+        it = self._current_cfg_item()
+        if not it:
+            return
+        name, ok = QInputDialog.getText(self, "Rename Profile", "New filename:", text=it['rel'])
+        if not ok or not name.strip():
+            return
+        root = self._rb_path()
+        dst = os.path.join(root, name.strip())
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(it['full'], dst)
+            self.status.setText(f"Renamed to {name}")
+            self._refresh_configs()
+        except Exception:
+            self.status.setText("Failed to rename")
+
+    def _delete_selected(self):
+        it = self._current_cfg_item()
+        if not it:
+            return
+        # Prevent deleting active config.cfg directly
+        if it['rel'] == 'config.cfg' or it['is_active']:
+            QMessageBox.information(self, "Delete Profile", "Refusing to delete active config.cfg. Set another active first or delete the copy.")
+            return
+        ret = QMessageBox.question(self, "Delete Profile", f"Delete {it['rel']}? This cannot be undone.")
+        if ret != QMessageBox.Yes:
+            return
+        try:
+            os.remove(it['full'])
+            self.status.setText(f"Deleted {it['rel']}")
+            self._refresh_configs()
+        except Exception:
+            self.status.setText("Failed to delete")
+
+    def _import_config(self):
+        root = self._rb_path()
+        if not root:
+            self.status.setText("Select a device first")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import config (.cfg)", root, "Config (*.cfg)")
+        if not path:
+            return
+        name, ok = QInputDialog.getText(self, "Import As", "Destination filename under /.rockbox:", text="configs/imported.cfg")
+        if not ok or not name.strip():
+            return
+        dst = os.path.join(root, name.strip())
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            import shutil as _sh
+            _sh.copy2(path, dst)
+            self.status.setText(f"Imported to {name}")
+            self._refresh_configs()
+        except Exception:
+            self.status.setText("Failed to import")
+
+    def _export_selected(self):
+        it = self._current_cfg_item()
+        if not it:
+            return
+        dst, _ = QFileDialog.getSaveFileName(self, "Export config", it['name'])
+        if not dst:
+            return
+        try:
+            import shutil as _sh
+            _sh.copy2(it['full'], dst)
+            self.status.setText(f"Exported to {dst}")
+        except Exception:
+            self.status.setText("Failed to export")
+
+    def _open_text_editor(self, path: str, title: str):
+        try:
+            try:
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+            except FileNotFoundError:
+                content = ''
+        except Exception:
+            content = ''
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        v = QVBoxLayout(dlg)
+        edit = QPlainTextEdit(); edit.setPlainText(content)
+        v.addWidget(edit, 1)
+        row = QHBoxLayout(); row.addStretch(1)
+        saveb = QPushButton("Save"); cancelb = QPushButton("Cancel")
+        row.addWidget(cancelb); row.addWidget(saveb)
+        v.addLayout(row)
+        def _save():
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(edit.toPlainText())
+                self.status.setText("Saved")
+                dlg.accept()
+            except Exception:
+                self.status.setText("Save failed (see logs)")
+        saveb.clicked.connect(_save)
+        cancelb.clicked.connect(dlg.reject)
+        dlg.exec()
