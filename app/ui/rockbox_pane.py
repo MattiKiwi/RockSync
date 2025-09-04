@@ -8,6 +8,10 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QInputDialog
 )
 from rockbox_utils import list_rockbox_devices
+try:
+    from ui.rockbox_configurator import RockboxConfiguratorDialog
+except Exception:
+    RockboxConfiguratorDialog = None  # type: ignore
 
 
 def _fmt_size(n: int) -> str:
@@ -80,36 +84,41 @@ class RockboxPane(QWidget):
         row1.addWidget(self.cfg_refresh_btn)
         pv.addLayout(row1)
         row2 = QHBoxLayout()
-        self.btn_set_active = QPushButton("Set Active")
-        self.btn_edit = QPushButton("Edit…")
-        self.btn_new_from_current = QPushButton("New from Current")
-        self.btn_duplicate = QPushButton("Duplicate…")
-        self.btn_rename = QPushButton("Rename…")
-        self.btn_delete = QPushButton("Delete…")
-        row2.addWidget(self.btn_set_active)
-        row2.addWidget(self.btn_edit)
-        row2.addWidget(self.btn_new_from_current)
-        row2.addWidget(self.btn_duplicate)
-        row2.addWidget(self.btn_rename)
-        row2.addWidget(self.btn_delete)
-        row2.addStretch(1)
-        pv.addLayout(row2)
-        row3 = QHBoxLayout()
+        #self.btn_set_active = QPushButton("Set Active")
+        self.btn_edit = QPushButton("Configure…")
         self.btn_import = QPushButton("Import…")
         self.btn_export = QPushButton("Export…")
-        row3.addWidget(self.btn_import)
-        row3.addWidget(self.btn_export)
-        row3.addStretch(1)
-        pv.addLayout(row3)
+        #self.btn_new_from_current = QPushButton("New from Current")
+        #self.btn_duplicate = QPushButton("Duplicate…")
+        #self.btn_rename = QPushButton("Rename…")
+        #self.btn_delete = QPushButton("Delete…")
+        #row2.addWidget(self.btn_set_active)
+        row2.addWidget(self.btn_edit)
+        #row2.addWidget(self.btn_new_from_current)
+        #row2.addWidget(self.btn_duplicate)
+        #row2.addWidget(self.btn_rename)
+        #row2.addWidget(self.btn_delete)
+        row2.addWidget(self.btn_import)
+        row2.addWidget(self.btn_export)
+        row2.addStretch(1)
+        pv.addLayout(row2)
+
+        # Info labels for convenience (used elsewhere)
+        info_form = QFormLayout()
+        self.db_root = QLabel("/")
+        self.active_cfg_label = QLabel("(none)")
+        #info_form.addRow("RB dir", self.db_root)
+        #info_form.addRow("Active", self.active_cfg_label)
+        pv.addLayout(info_form)
         root.addWidget(prof_group)
 
         # Wire profile actions
-        self.btn_set_active.clicked.connect(self._set_active_config)
+        #self.btn_set_active.clicked.connect(self._set_active_config)
         self.btn_edit.clicked.connect(self._edit_selected_config)
-        self.btn_new_from_current.clicked.connect(self._new_from_current)
-        self.btn_duplicate.clicked.connect(self._duplicate_selected)
-        self.btn_rename.clicked.connect(self._rename_selected)
-        self.btn_delete.clicked.connect(self._delete_selected)
+        #elf.btn_new_from_current.clicked.connect(self._new_from_current)
+        #self.btn_duplicate.clicked.connect(self._duplicate_selected)
+        #self.btn_rename.clicked.connect(self._rename_selected)
+        #self.btn_delete.clicked.connect(self._delete_selected)
         self.btn_import.clicked.connect(self._import_config)
         self.btn_export.clicked.connect(self._export_selected)
 
@@ -346,7 +355,16 @@ class RockboxPane(QWidget):
         it = self._current_cfg_item()
         if not it:
             return
-        self._open_text_editor(it['full'], title=f"Edit {it['rel']}")
+        # Prefer configurator if available; fallback to raw editor
+        path = it['full']
+        if RockboxConfiguratorDialog is not None:
+            dlg = RockboxConfiguratorDialog(path, self)
+            ok = dlg.exec()
+            if ok:
+                self.status.setText(f"Saved {it['rel']}")
+                return
+        # Fallback
+        #self._open_text_editor(path, title=f"Edit {it['rel']}")
 
     def _new_from_current(self):
         root = self._rb_path()
