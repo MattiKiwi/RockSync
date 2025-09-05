@@ -19,6 +19,7 @@ from ui.search_pane import SearchPane
 from ui.database_pane import DatabasePane
 from ui.device_pane import DeviceExplorerPane
 from ui.sync_pane import SyncPane
+from ui.daily_mix_pane import DailyMixPane
 from ui.rockbox_pane import RockboxPane
 from theme import apply_theme
 from theme_loader import list_theme_files
@@ -124,6 +125,12 @@ class AppWindow(QMainWindow):
         rb_layout.addWidget(self.rockbox)
         self.stack.addWidget(self.rockbox_tab)
 
+        # Daily Mix (added at the end to keep existing indices stable)
+        self.daily_tab = QWidget(); dl_layout = QVBoxLayout(self.daily_tab)
+        self.daily = DailyMixPane(self, self.daily_tab)
+        dl_layout.addWidget(self.daily)
+        self.stack.addWidget(self.daily_tab)
+
         # Settings
         self.settings_tab = QWidget()
         self._build_settings_tab(self.settings_tab)
@@ -153,9 +160,10 @@ class AppWindow(QMainWindow):
         add_page("🗃️  Database", 3)
         add_page("🔄  Sync", 4)
         add_page("🎛️  Rockbox", 5)
-        add_page("⚙️  Settings", 6)
+        add_page("🎧  Daily Mix", 6)
+        add_page("⚙️  Settings", 7)
         add_header("Advanced")
-        add_page("🧪  Tasks (Advanced)", 7)
+        add_page("🧪  Tasks (Advanced)", 8)
 
         def on_nav_changed():
             it = self.nav.currentItem()

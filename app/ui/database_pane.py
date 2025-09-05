@@ -258,17 +258,46 @@ class DatabasePane(QWidget):
                 except Exception:
                     easy = None
                 tags = getattr(easy, 'tags', None) or getattr(audio, 'tags', None) or {}
+
                 def first(key, default=""):
                     try:
                         v = tags.get(key)
                         return (v[0] if isinstance(v, list) and v else v) or default
                     except Exception:
                         return default
+
+                def all_values(key) -> list:
+                    try:
+                        v = tags.get(key)
+                        if v is None:
+                            return []
+                        if isinstance(v, list):
+                            return [str(x) for x in v if str(x).strip()]
+                        s = str(v)
+                        return [s] if s.strip() else []
+                    except Exception:
+                        return []
+
                 artist = first('artist', artist)
                 album = first('album', album)
                 title = first('title', os.path.basename(path))
                 albumartist = first('albumartist', albumartist)
-                genre = first('genre', genre)
+                # Collect all genres and store them joined by '; '
+                genres_list = all_values('genre')
+                if not genres_list:
+                    genre = genre
+                else:
+                    # normalize whitespace and dedupe while preserving order
+                    seen = set()
+                    norm = []
+                    for g in genres_list:
+                        gs = g.strip()
+                        if not gs:
+                            continue
+                        if gs not in seen:
+                            seen.add(gs)
+                            norm.append(gs)
+                    genre = "; ".join(norm)
                 track = str(first('tracknumber', "")).split('/')[0]
                 disc = str(first('discnumber', "")).split('/')[0]
                 year = first('year', year)

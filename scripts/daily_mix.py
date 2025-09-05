@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-daily_mix.py — Auto-generate genre-weighted "Daily Mix" playlists for Rockbox.
+daily_mix.py — Auto-generate genre-weighted "Daily Mix" playlists.
+
+Now supports reading from the indexed SQLite database for either the
+local Library or a connected Device, and ignores empty/unknown genres.
 
 Features
 - Anchor genres to shape the mix (auto or user-specified).
@@ -13,27 +16,27 @@ Features
 
 Dependencies
 - Optional: mutagen (pip install mutagen) for robust tags+durations.
-  Without mutagen, script infers genre/artist/album from folders and
-  estimates duration by track-count fallback.
+  Without mutagen, script infers tags from folders and estimates duration.
 
 Usage examples
 --------------
-Auto-pick genres, 75-minute mix, save to device Playlists:
-    python daily_mix.py --library ~/Music --out-dir /media/ROCKBOX/Playlists \
+Using the Library DB and saving to device Playlists:
+    python daily_mix.py --db-source library --out-dir /media/ROCKBOX/Playlists \
         --target-min 75 --mix-name "Daily Mix"
 
-Pick anchor genres explicitly:
-    python daily_mix.py --library ~/Music --out-dir /media/ROCKBOX/Playlists \
-        --target-min 60 --genres "Electronic" "Ambient"
+Using a device DB (detected at MOUNTPOINT/.rocksync/music_index.sqlite3):
+    python daily_mix.py --db-source device --device-mount /media/ROCKBOX \
+        --out-dir /media/ROCKBOX/Playlists --target-min 60
 
-Create 3 mixes, limit 2 tracks per artist, boost last 45 days:
-    python daily_mix.py --library ~/Music --out-dir ./Playlists \
-        --target-min 70 --mix-count 3 --per-artist-max 2 --fresh-days 45
+Fallback (no DB): scan a directory directly:
+    python daily_mix.py --library ~/Music --out-dir ./Playlists --target-min 70
 """
 
 from __future__ import annotations
 import argparse
 import os
+import sqlite3
+import sys
 from pathlib import Path
 import random
 import time
@@ -48,6 +51,18 @@ try:
     _HAS_MUTAGEN = True
 except Exception:
     _HAS_MUTAGEN = False
+
+# Try to load CONFIG_PATH to locate the default Library DB
+_CONFIG_PATH: Optional[Path] = None
+try:
+    here = Path(__file__).resolve()
+    app_dir = here.parents[1] / 'app'
+    if str(app_dir) not in sys.path:
+        sys.path.append(str(app_dir))
+    from core import CONFIG_PATH as _CP  # type: ignore
+    _CONFIG_PATH = Path(_CP)
+except Exception:
+    _CONFIG_PATH = None
 
 # ---------- Models ----------
 
@@ -120,6 +135,32 @@ def read_tags(p: Path) -> Tuple[str, str, str, str, Optional[int]]:
 
     return artist, album, title, genre, seconds
 
+_BAD_GENRES = {"", "unknown", "(unknown)", "undef", "undefined", "n/a", "none", "genre:"}
+
+def _split_genre_tokens(genre: str) -> List[str]:
+    # Split on common separators seen in tags and UIs
+    if not genre:
+        return []
+    raw = [genre]
+    # Expand splits progressively
+    seps = [';', '|', '/', ',']
+    for sep in seps:
+        tmp = []
+        for item in raw:
+            tmp.extend(item.split(sep))
+        raw = tmp
+    return [t.strip() for t in raw if t.strip()]
+
+def is_valid_genre(genre: str) -> bool:
+    # A genre string is valid if any token is valid
+    tokens = _split_genre_tokens(genre)
+    if not tokens:
+        return False
+    for t in tokens:
+        if (t or '').strip().lower() not in _BAD_GENRES:
+            return True
+    return False
+
 def scan_library(root: Path) -> List[Track]:
     tracks: List[Track] = []
     for p in root.rglob("*"):
@@ -130,10 +171,14 @@ def scan_library(root: Path) -> List[Track]:
             mtime = p.stat().st_mtime
         except Exception:
             mtime = time.time()
+        g = (genre or "").strip()
+        if not is_valid_genre(g):
+            # Ignore empty/unknown genres
+            continue
         tracks.append(Track(path=p, artist=artist or "Unknown Artist",
                             album=album or "Unknown Album",
                             title=title or p.stem,
-                            genre=genre or "Unknown",
+                            genre=g,
                             seconds=seconds, mtime=mtime))
     return tracks
 
@@ -141,8 +186,13 @@ def choose_anchor_genres(all_tracks: List[Track], desired_count: int = 3) -> Lis
     # frequency count
     freq: Dict[str, int] = {}
     for t in all_tracks:
-        g = t.genre.strip() or "Unknown"
-        freq[g] = freq.get(g, 0) + 1
+        g = t.genre.strip()
+        if not is_valid_genre(g):
+            continue
+        for tok in _split_genre_tokens(g):
+            if (tok or '').strip().lower() in _BAD_GENRES:
+                continue
+            freq[tok] = freq.get(tok, 0) + 1
     # pick top-N but add slight randomness
     ranked = sorted(freq.items(), key=lambda kv: kv[1], reverse=True)
     top = [g for g, _ in ranked[:max(2, desired_count + 2)]]
@@ -160,10 +210,12 @@ def weight_tracks(tracks: List[Track],
     """
     now = time.time()
     window = (fresh_days or 0) * 86400
+    anchors_lc = {a.strip().lower() for a in anchors}
     weighted: List[Tuple[Track, float]] = []
     for t in tracks:
         w = 1.0
-        if t.genre in anchors:
+        toks = _split_genre_tokens(t.genre)
+        if any(tok.strip().lower() in anchors_lc for tok in toks):
             w += 1.0
         if fresh_days and (now - t.mtime) <= window:
             w += 0.5
@@ -220,15 +272,12 @@ def build_mix(tracks: List[Track],
             running_seconds += dur
         else:
             # duration unknown: use approximate track count
-            if len(playlist) >= approx_count:
+            if len(playlist) >= approx_count:  # type: ignore[arg-type]
                 break
         playlist.append(nxt)
         used_paths.add(nxt.path)
         per_artist_counts[nxt.artist] = per_artist_counts.get(nxt.artist, 0) + 1
         last_artist = nxt.artist
-
-        # small chance to inject a non-anchor after an anchor to keep variety
-        # (handled implicitly by weights; no special logic needed here)
 
         # hard safety limit
         if len(playlist) >= 200:
@@ -238,7 +287,7 @@ def build_mix(tracks: List[Track],
 
 def write_m3u8(playlist_dir: Path, mix_name: str, tracks: List[Track]) -> Path:
     playlist_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = "".join(c for c in mix_name if c not in r'<>:"/\|?*').strip() or "Daily Mix"
+    safe_name = "".join(c for c in mix_name if c not in r'<>:"/\\|?*').strip() or "Daily Mix"
     ts = time.strftime("%Y-%m-%d")
     out = playlist_dir / f"{safe_name} - {ts}.m3u8"
     lines = ["#EXTM3U"]
@@ -250,11 +299,61 @@ def write_m3u8(playlist_dir: Path, mix_name: str, tracks: List[Track]) -> Path:
     out.write_text("\n".join(lines), encoding="utf-8")
     return out
 
+# ---------- DB integration ----------
+
+def load_tracks_from_db(db_path: Path) -> List[Track]:
+    tracks: List[Track] = []
+    if not db_path.exists():
+        return tracks
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            cur = conn.execute(
+                "SELECT path, artist, album, title, IFNULL(genre,''), IFNULL(duration_seconds,0), IFNULL(mtime,0) FROM tracks"
+            )
+            for (path, artist, album, title, genre, dur, mtime) in cur.fetchall():
+                g = (genre or "").strip()
+                if not is_valid_genre(g):
+                    continue
+                try:
+                    p = Path(path)
+                except Exception:
+                    continue
+                seconds = int(dur) if dur else None
+                mt = float(mtime) if mtime else time.time()
+                tracks.append(Track(path=p,
+                                    artist=(artist or '').strip() or 'Unknown Artist',
+                                    album=(album or '').strip() or 'Unknown Album',
+                                    title=(title or '').strip() or p.stem,
+                                    genre=g,
+                                    seconds=seconds,
+                                    mtime=mt))
+    except Exception:
+        return []
+    return tracks
+
+def resolve_db_path(db: Optional[Path], db_source: Optional[str], device_mount: Optional[Path]) -> Optional[Path]:
+    if db:
+        return db
+    if (db_source or '').lower() == 'library':
+        if _CONFIG_PATH is not None:
+            return _CONFIG_PATH.with_name('music_index.sqlite3')
+        # Fallback: repo/app/music_index.sqlite3
+        return (Path(__file__).resolve().parents[1] / 'app' / 'music_index.sqlite3')
+    if (db_source or '').lower() == 'device':
+        if device_mount:
+            return device_mount / '.rocksync' / 'music_index.sqlite3'
+    return None
+
 # ---------- CLI ----------
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Generate genre-weighted Daily Mix playlists for Rockbox.")
-    ap.add_argument("--library", type=Path, required=True, help="Path to your music library root.")
+    ap = argparse.ArgumentParser(description="Generate genre-weighted Daily Mix playlists (DB-aware).")
+    src = ap.add_mutually_exclusive_group(required=False)
+    src.add_argument("--library", type=Path, help="Scan this library folder directly (fallback if no DB).")
+    ap.add_argument("--db", type=Path, help="Path to music_index.sqlite3 to read tracks from.")
+    ap.add_argument("--db-source", choices=["library", "device"], help="Use the indexed DB for Library or Device.")
+    ap.add_argument("--device-mount", type=Path, help="Device mountpoint when using --db-source device.")
+
     ap.add_argument("--out-dir", type=Path, required=True, help="Where to save .m3u8 playlists (PC or device).")
     ap.add_argument("--mix-name", type=str, default="Daily Mix", help="Base name for the playlist(s).")
     ap.add_argument("--target-min", type=int, default=75, help="Target playlist length in minutes.")
@@ -270,12 +369,27 @@ def main():
     if args.seed is not None:
         random.seed(args.seed)
 
-    tracks = scan_library(args.library)
+    # Prefer DB if provided/selected
+    db_path = resolve_db_path(args.db, args.db_source, args.device_mount)
+    tracks: List[Track]
+    if db_path is not None and db_path.exists():
+        tracks = load_tracks_from_db(db_path)
+    else:
+        # Fallback to scanning a folder if provided
+        lib = args.library
+        if not lib:
+            print("No DB found/selected and no --library provided.")
+            return
+        tracks = scan_library(lib)
     if not tracks:
         print("No audio files found.")
         return
 
-    anchors = args.genres or choose_anchor_genres(tracks, desired_count=3)
+    # Clean provided anchors and ignore unknowns
+    provided = None
+    if args.genres:
+        provided = [g for g in (args.genres or []) if is_valid_genre(str(g))]
+    anchors = provided or choose_anchor_genres(tracks, desired_count=3)
     print(f"Anchor genres: {', '.join(anchors)}")
 
     for i in range(args.mix_count):

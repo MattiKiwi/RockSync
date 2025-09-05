@@ -207,4 +207,4 @@ marimo/_lsp/
 __marimo__/
 rockbox
 *.sqlite3
-
+settings.json
