@@ -2,12 +2,13 @@ import os
 import sys
 import shlex
 import uuid
-from PySide6.QtCore import Qt, QProcess
+from PySide6.QtCore import Qt, QProcess, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem, QStackedWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QFormLayout, QLineEdit,
-    QSpinBox, QCheckBox, QComboBox, QPlainTextEdit, QFileDialog, QMessageBox, QDialog
+    QSpinBox, QCheckBox, QComboBox, QPlainTextEdit, QFileDialog, QMessageBox, QDialog,
+    QProgressBar
 )
 
 from core import ROOT, cmd_exists
@@ -58,6 +59,33 @@ class AppWindow(QMainWindow):
         title.setObjectName("TopAppTitle")
         top_h.addWidget(title)
         top_h.addStretch(1)
+
+        # Device / Status indicator cluster (very visible)
+        self.device_group = QWidget(); self.device_group.setObjectName("DeviceIndicator")
+        dg = QHBoxLayout(self.device_group); dg.setContentsMargins(8, 4, 8, 4); dg.setSpacing(8)
+        # Current action label
+        self.action_label = QLabel("Idle")
+        self.action_label.setObjectName("ActionStatus")
+        self.action_label.setStyleSheet("font-weight: 600; color: #0a7;")
+        dg.addWidget(self.action_label)
+        # Device name + model
+        self.device_label = QLabel("No device detected")
+        self.device_label.setObjectName("DeviceLabel")
+        self.device_label.setStyleSheet("font-weight: 600;")
+        dg.addWidget(self.device_label)
+        # Storage bar
+        self.storage_bar = QProgressBar()
+        self.storage_bar.setObjectName("DeviceStorageBar")
+        self.storage_bar.setMinimumWidth(220)
+        self.storage_bar.setMaximumWidth(300)
+        self.storage_bar.setFormat("%p% used")
+        self.storage_bar.setToolTip("Storage: unknown")
+        self.storage_bar.setTextVisible(True)
+        dg.addWidget(self.storage_bar)
+        top_h.addWidget(self.device_group)
+        # Stretch after indicator to center it between left title and right controls
+        top_h.addStretch(1)
+        
         # Quick theme switcher
         theme_options = ['system'] + list_theme_files()
         if 'theme_file' not in self.settings and 'theme' in self.settings:
@@ -160,7 +188,7 @@ class AppWindow(QMainWindow):
         add_page("🗃️  Database", 3)
         add_page("🔄  Sync", 4)
         add_page("🎛️  Rockbox", 5)
-        add_page("🎧  Daily Mix", 6)
+        add_page("🎧  Playlists", 6)
         add_page("⚙️  Settings", 7)
         add_header("Advanced")
         add_page("🧪  Tasks (Advanced)", 8)
@@ -192,6 +220,93 @@ class AppWindow(QMainWindow):
 
         # Apply theme after UI exists
         apply_theme(QApplication.instance(), self.settings.get('theme_file', 'system'))
+
+        # Kick off device indicator updates
+        self._update_device_indicator()
+        self.device_timer = QTimer(self)
+        self.device_timer.setInterval(8000)
+        self.device_timer.timeout.connect(self._update_device_indicator)
+        self.device_timer.start()
+
+    # --------------- Top bar helpers ---------------
+    def _human_bytes(self, n: int) -> str:
+        try:
+            n = int(n)
+        except Exception:
+            return "0 B"
+        units = ["B", "KB", "MB", "GB", "TB", "PB"]
+        i = 0
+        f = float(n)
+        while f >= 1024 and i < len(units) - 1:
+            f /= 1024.0
+            i += 1
+        if i == 0:
+            return f"{int(f)} {units[i]}"
+        return f"{f:.1f} {units[i]}"
+
+    def _choose_active_device(self, devices):
+        if not devices:
+            return None
+        # Prefer device that matches configured device_root, else first
+        dev_root = (self.settings.get('device_root') or '').strip()
+        if dev_root:
+            for d in devices:
+                mp = (d.get('mountpoint') or '').strip()
+                if mp and (dev_root.startswith(mp) or mp.startswith(dev_root)):
+                    return d
+        return devices[0]
+
+    def _update_device_indicator(self):
+        try:
+            from rockbox_utils import list_rockbox_devices
+        except Exception:
+            # Could not import util; hide storage
+            self.device_label.setText("No device detected")
+            self.storage_bar.setValue(0)
+            self.storage_bar.setToolTip("Storage: unknown")
+            return
+        try:
+            devices = list_rockbox_devices() or []
+        except Exception:
+            devices = []
+        d = self._choose_active_device(devices)
+        if not d:
+            self.device_label.setText("No device detected")
+            self.storage_bar.setValue(0)
+            self.storage_bar.setFormat("No storage")
+            self.storage_bar.setToolTip("Connect a Rockbox device to see storage details.")
+            return
+        name = d.get('name') or d.get('label') or d.get('mountpoint') or 'Device'
+        model = d.get('display_model') or d.get('model') or d.get('target') or ''
+        mp = d.get('mountpoint') or ''
+        total = int(d.get('total_bytes') or 0)
+        free = int(d.get('free_bytes') or 0)
+        used = max(0, total - free) if total > 0 else 0
+        pct_used = int(round((used / total) * 100)) if total > 0 else 0
+        self.device_label.setText(f"🔌 {name} — {model}")
+        self.storage_bar.setMaximum(100)
+        self.storage_bar.setValue(pct_used)
+        self.storage_bar.setFormat(f"{pct_used}% used")
+        tip = (
+            f"Device: {name}\n"
+            f"Model: {model}\n"
+        )
+        if total > 0:
+            tip += (
+                f"Capacity: {self._human_bytes(total)}\n"
+                f"Used: {self._human_bytes(used)}\n"
+                f"Free: {self._human_bytes(free)} ({100 - pct_used}% free)"
+            )
+        else:
+            tip += "Capacity: unknown"
+        self.storage_bar.setToolTip(tip)
+
+    def _set_action_status(self, text: str, running: bool):
+        self.action_label.setText(text)
+        if running:
+            self.action_label.setStyleSheet("font-weight: 700; color: #b50;")
+        else:
+            self.action_label.setStyleSheet("font-weight: 600; color: #0a7;")
 
     # --------------- Settings tab ---------------
     def _build_settings_tab(self, parent: QWidget):
@@ -519,6 +634,9 @@ class AppWindow(QMainWindow):
         cmd = self.build_cmd(task)
         self.append_output(f"\n$ {cmd}\n")
         self.run_btn.setEnabled(False)
+        # Update action indicator (script from registry)
+        lbl = task.get('label') or 'Task'
+        self._set_action_status(f"Script: {lbl}", True)
 
         # Use QProcess for async IO
         if self.proc is not None:
@@ -535,6 +653,7 @@ class AppWindow(QMainWindow):
             self.logger.info("Process exited | rc=%s", rc)
             ui_log('run_task_end', rc=rc)
             self.run_btn.setEnabled(True)
+            self._set_action_status("Idle", False)
         self.proc.finished.connect(on_finished)
 
         # Start process
@@ -546,6 +665,7 @@ class AppWindow(QMainWindow):
                 self.proc.terminate()
                 self.append_output("\n[Terminated]\n")
                 ui_log('stop_task')
+                self._set_action_status("Idle", False)
             except Exception as e:
                 self.append_output(f"\n[Error stopping] {e}\n")
 
@@ -638,7 +758,11 @@ class AppWindow(QMainWindow):
             cmd = self._build_cmd_with_values(task, values)
             self.append_output(f"\n$ {cmd}\n")
             ui_log('quick_task_run', task=task.get('label'), folder_path=folder_path, cmd=cmd)
-            self._start_process(cmd)
+            try:
+                self._set_action_status(f"Script: {task.get('label')}", True)
+            except Exception:
+                pass
+            self._start_process(cmd, label=task.get('label'))
             if close_cb.isChecked():
                 dlg.accept()
 
@@ -664,7 +788,7 @@ class AppWindow(QMainWindow):
                 parts.extend([key, shlex.quote(str(val))])
         return " ".join(parts)
 
-    def _start_process(self, cmd):
+    def _start_process(self, cmd, label: str | None = None):
         self.run_btn.setEnabled(False)
         if self.proc is not None:
             try:
@@ -679,8 +803,17 @@ class AppWindow(QMainWindow):
             self.append_output(f"\n[Exit {rc}]\n")
             self.logger.info("Process exited | rc=%s", rc)
             self.run_btn.setEnabled(True)
+            self._set_action_status("Idle", False)
         self.proc.finished.connect(on_finished)
         self.proc.start("/bin/sh", ["-c", cmd])
+        # Update action indicator with a short command preview
+        if label and str(label).strip():
+            self._set_action_status(f"Script: {label}", True)
+        else:
+            preview = cmd.strip().split("\n", 1)[0]
+            if len(preview) > 120:
+                preview = preview[:117] + '...'
+            self._set_action_status(f"Script: {preview}", True)
 
 
 def run():

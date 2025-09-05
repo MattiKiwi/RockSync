@@ -207,6 +207,11 @@ class SyncPane(QWidget):
             pass
         self._stop_flag = False
         self.run_btn.setEnabled(False)
+        # Inform top bar indicator
+        try:
+            self.controller._set_action_status("Sync: preparing...", True)
+        except Exception:
+            pass
         mode = self.mode_combo.currentText()
         sel_info = ""
         if self.mode_combo.currentIndex() == 1:
@@ -241,6 +246,7 @@ class SyncPane(QWidget):
                             selected_roots.append(p)
 
                 # Build source map according to selection
+                self._queue.put(("status", "Sync: scanning source..."))
                 src_files: list[tuple[Path, Path]] = []
                 def add_from_root(root_dir: Path):
                     for rootd, _, files in os.walk(root_dir):
@@ -263,6 +269,8 @@ class SyncPane(QWidget):
                 else:
                     add_from_root(srcp)
                 # Copy/update
+                if not self._stop_flag:
+                    self._queue.put(("status", "Sync: copying files..."))
                 for full, rel in src_files:
                     if self._stop_flag:
                         break
@@ -289,6 +297,7 @@ class SyncPane(QWidget):
 
                 # Delete extras if requested
                 if self.delete_extras_cb.isChecked() and not self._stop_flag:
+                    self._queue.put(("status", "Sync: deleting extras..."))
                     src_set = {rel.as_posix() for _, rel in src_files}
                     # Scope deletions: if partial, only under selected roots; otherwise whole dst
                     scopes: list[Path] = []
@@ -323,6 +332,7 @@ class SyncPane(QWidget):
 
                 # Optional downsample step
                 if not self._stop_flag and self.quality_box.currentIndex() == 1:
+                    self._queue.put(("status", "Sync: downsampling audio..."))
                     self._queue.put(("log", "Downsampling FLAC to 16-bit/44.1kHz on device...\n"))
                     script = str(SCRIPTS_DIR / 'downsampler.py')
                     jobs = 0
@@ -359,6 +369,8 @@ class SyncPane(QWidget):
                     self._queue.put(("log", "Running Rockbox clean up (covers + lyrics)...\n"))
 
                     def _run_script(cmd, label: str):
+                        # Announce specific cleanup step
+                        self._queue.put(("status", f"Sync: {label.lower()}..."))
                         try:
                             proc = subprocess.Popen(
                                 cmd,
@@ -406,6 +418,10 @@ class SyncPane(QWidget):
 
     def stop_sync(self):
         self._stop_flag = True
+        try:
+            self.controller._set_action_status("Sync: stopping...", True)
+        except Exception:
+            pass
 
     def _append(self, text: str):
         self.log.moveCursor(QTextCursor.End)
@@ -418,9 +434,18 @@ class SyncPane(QWidget):
                 kind, payload = self._queue.get_nowait()
                 if kind == 'log':
                     self._append(payload)
+                elif kind == 'status':
+                    try:
+                        self.controller._set_action_status(str(payload), True)
+                    except Exception:
+                        pass
                 elif kind == 'end':
                     self.run_btn.setEnabled(True)
                     self.timer.stop()
+                    try:
+                        self.controller._set_action_status("Idle", False)
+                    except Exception:
+                        pass
                     break
         except queue.Empty:
             pass
