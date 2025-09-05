@@ -9,9 +9,8 @@ from ui.explorer_pane import ExplorerPane
 
 
 class DeviceExplorerPane(ExplorerPane):
-    """Explorer pane dedicated to the device root.
-    Inherits ExplorerPane behavior but defaults to settings['device_root']
-    and adds a convenient button to jump there.
+    """Explorer pane dedicated to a connected Rockbox device.
+    When no device is connected, the explorer remains empty.
     """
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -28,9 +27,9 @@ class DeviceExplorerPane(ExplorerPane):
         top.addWidget(up_btn)
         dir_refresh = QPushButton("Refresh Folder")
         # Hidden path field retained to integrate with base ExplorerPane helpers
-        self.explorer_path = QLineEdit(self.controller.settings.get("device_root", ""))
+        self.explorer_path = QLineEdit("")
         self.explorer_path.setVisible(False)
-        dir_refresh.clicked.connect(lambda: self.navigate(self.explorer_path.text()))
+        dir_refresh.clicked.connect(self._refresh_folder)
         top.addWidget(dir_refresh)
         root.addLayout(top)
 
@@ -77,7 +76,6 @@ class DeviceExplorerPane(ExplorerPane):
         splitter.setStretchFactor(1, 2)
 
         self._refresh_devices()
-        self.navigate(self.explorer_path.text())
 
     def _refresh_devices(self):
         self.device_combo.blockSignals(True)
@@ -91,6 +89,18 @@ class DeviceExplorerPane(ExplorerPane):
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         if self.device_combo.count() > 0:
             self._use_selected_music()
+        else:
+            # No device connected: clear view and path
+            try:
+                self.tree.clear()
+            except Exception:
+                pass
+            self.explorer_path.setText("")
+
+    def _refresh_folder(self):
+        path = (self.explorer_path.text() or '').strip()
+        if path and os.path.isdir(path):
+            self.navigate(path)
 
     def _on_device_changed(self, idx):
         # Auto-open Music on selection
@@ -99,7 +109,7 @@ class DeviceExplorerPane(ExplorerPane):
     def _use_selected_music(self):
         mp = self.device_combo.currentData()
         if not mp:
-            mp = self.controller.settings.get('device_root', '')
-        if mp:
-            path = mp.rstrip('/\\') + '/Music'
-            self._set_path(path)
+            # No device selected/available: keep view empty
+            return
+        path = mp.rstrip('/\\') + '/Music'
+        self._set_path(path)

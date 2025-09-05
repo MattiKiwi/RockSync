@@ -16,6 +16,22 @@ def get_tasks():
             "bin_deps": [],
         },
         {
+            "id": "tag_genres",
+            "label": "Tag Genres (AcoustID + MusicBrainz)",
+            "script": SCRIPTS_DIR / "tag_genres.py",
+            "args": [
+                {"key": "--library", "label": "Library Root", "type": "path", "default": str(ROOT)},
+                {"key": "--dry-run", "label": "Dry run (no write)", "type": "bool", "default": True},
+                {"key": "--overwrite", "label": "Overwrite existing genres", "type": "bool", "default": False},
+                {"key": "--use-acoustid", "label": "Use AcoustID (fpcalc required)", "type": "bool", "default": False},
+                {"key": "--use-tag-search", "label": "Use MusicBrainz tag search", "type": "bool", "default": True},
+                {"key": "--folder-fallback", "label": "Fallback to folder name", "type": "bool", "default": False},
+                {"key": "--max-genres", "label": "Max genres to write", "type": "int", "default": 5},
+            ],
+            "py_deps": ["mutagen", "acoustid", "musicbrainzngs"],
+            "bin_deps": ["fpcalc"],
+        },
+        {
             "id": "sort_by_artist",
             "label": "Sort Folders by Artist",
             "script": SCRIPTS_DIR / "sort_by_artist.py",

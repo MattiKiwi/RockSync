@@ -1,88 +1,100 @@
 # RockSync
-An optional alternative to iTunes for Rockbox-based MP3 players. Browse your library, scan a connected device, sync music one-way, clean up covers/lyrics, and run helper scripts — all from a simple Qt (PySide6) app.
+An optional alternative to iTunes for Rockbox-based MP3 players. Browse your library, index it into a fast SQLite DB, scan a connected device, search, build mixes, one‑way sync to device, clean up covers/lyrics, and run helper scripts — all from a simple Qt (PySide6) app.
 
 ## Quick Start
 
-- Requirements: Python 3.9+ and `PySide6`. Optional per‑feature deps: `mutagen`, `Pillow`, `requests`, `beautifulsoup4`, `psutil`. Some conversions need `ffmpeg` on PATH.
+- Requirements: Python 3.9+ and `PySide6`.
 - Install (recommended):
-  - `pip install PySide6 mutagen Pillow requests beautifulsoup4 psutil`
-  - Install `ffmpeg` via your OS package manager if you’ll convert/downsample.
-- Run the app (repo root):
+  - `pip install PySide6 mutagen Pillow requests beautifulsoup4 psutil acoustid musicbrainzngs lyricsgenius tqdm`
+  - Install `ffmpeg` (and `ffprobe`) via your OS package manager if you’ll convert/downsample.
+  - For AcoustID: install Chromaprint’s `fpcalc` binary (system package) if you plan to run genre tagging.
+- Run the app from the repo root:
 
 ```
 python app/main.py
 ```
 
-Settings are saved to `app/settings.json`. Logs are written to `app/latest.log` and `app/debug.log` (enable verbose logging in Settings).
+- Important: create the Library DB first
+  - Open the app → go to “Database” → Source: “Library” → click “Scan”.
+  - This builds `music_index.sqlite3` next to `app/settings.json`. Several features (Search and Daily Mix) rely on this index.
 
-## What’s Inside
+Settings live in `app/settings.json`. Logs are written to `app/latest.log` and `app/debug.log` (enable verbose logging in Settings).
 
-- Library Explorer: Browse your music root; preview tags, embedded lyrics, and cover art. Right‑click folders to run tasks with that folder prefilled.
-- Device Explorer: Browse a connected Rockbox device’s `Music` folder. Works with detected devices or a configured path.
-- Tracks Scanner: Scan a device to list tracks with basic metadata and whether lyrics/cover are present.
+## Capabilities
+
+- Library Explorer: Browse your music root; preview basic tags and cover art. Right‑click folders to run tasks with that path prefilled.
+- Device Explorer: Browse a connected Rockbox device’s `Music` folder. Works with detected devices or a configured dummy path.
+- Search: Fast, DB‑backed search across artist/album/title/genre. Requires the Library DB to be built.
+- Database: Index your library (or a device) into a SQLite DB with tags, duration, and file metadata.
+- Daily Mix: Create themed, time‑balanced playlists based on genres/years from the DB. Requires Library or Device DB.
 - Sync: One‑way mirror from library → device `Music`.
   - Full or Partial (selected folders) mode
-  - Include extensions filter, “only copy missing” toggle, optional delete of extras on device (dangerous)
-  - Optional post‑sync clean‑up: resize front covers to 100x100, export embedded lyrics to sidecars, and promote a non‑cover image as front cover if missing
-  - Optional FLAC downsample on device to 16‑bit/44.1 kHz
-- Rockbox Tools: Detect devices, manage `.cfg` profiles under `/.rockbox`, and browse/install themes from themes.rockbox.org (per target).
-- Tasks (Advanced): Run the helper scripts below with arguments via a simple form; see output inline.
+  - Extensions filter; “only copy missing”; optionally delete extras on device
+  - Post‑sync clean‑up: resize covers to 100x100, export embedded lyrics to sidecars, promote a non‑cover image if cover missing
+  - Optional FLAC downsample on device to 16‑bit/44.1 kHz (requires `ffmpeg/ffprobe`)
+- Rockbox Tools: Detect devices, manage `.cfg` under `/.rockbox`, browse/install themes from themes.rockbox.org per target.
+- Tasks (Advanced): Run helper scripts below with arguments via a simple form; see output inline.
 - Themes: Switch between bundled UI themes under `app/themes` or use system default.
 
-## Dependencies by Feature
+## First Run & Usage
+
+- Configure Settings: Set `Music root`, `Device root`, lyrics subfolder/extension, cover size, job count, tokens (Genius/Last.fm), theme, and a dummy device path if desired.
+- Build the Library DB: Go to “Database” → Source: “Library” → click “Scan”.
+- Search: Use the Search tab after the DB exists. Change “Source” to search the Library DB or a device DB.
+- Device detection: Detected automatically via `scripts/rockbox_detector.py` (uses `psutil`) by looking for `/.rockbox`. Or enable a dummy device path in Settings.
+- Sync: Choose Full or Partial. In Partial mode, add folders from your library base and run.
+- Themes (Rockbox): Select a target (e.g., `ipodvideo`, `ipod6g`), list themes, preview screenshots, open theme page, and install to `/.rockbox`.
+- Daily Mix: Point to Library or Device DB and generate playlists into your chosen playlist folder.
+
+## Python Dependencies
 
 - Core GUI: `PySide6`
-- Audio metadata and lyrics/cover extraction: `mutagen` (optional), `Pillow` (optional for image preview)
-- Device detection: `psutil` (used by `scripts/rockbox_detector.py`)
-- Themes browser/installer: `requests`, `beautifulsoup4` (for site parsing), optional `tqdm` for CLI progress
-- Transcoding/downsampling: `ffmpeg` in PATH
+- Metadata & tagging: `mutagen`
+- Images (previews, resizing): `Pillow`
+- Rockbox detection: `psutil`
+- Themes browser/installer: `requests`, `beautifulsoup4`, `tqdm` (optional for CLI progress)
+- Lyrics (optional online): `lyricsgenius`
+- Genre tagging (optional): `acoustid` (aka pyacoustid), `musicbrainzngs`
 
-The app degrades gracefully: missing deps disable related features and show a helpful note.
+System tools required by some features/scripts:
+- `ffmpeg` and `ffprobe` on PATH (conversions, downsampling)
+- `fpcalc` (Chromaprint) for AcoustID lookups used by `tag_genres.py`
 
-## GUI Usage
+The app degrades gracefully: missing deps disable related features with a helpful note.
 
-- Settings: Configure Music root, Device root, lyrics subfolder and extension, default cover sizes, job count, API tokens (Genius, Last.fm), theme, and a dummy device for testing.
-- Device detection: The app polls connected drives and identifies Rockbox devices (looks for `/.rockbox`). You can also specify a dummy path in Settings to try the UI without hardware.
-- Themes (Rockbox): Choose a target (e.g., `ipodvideo`, `ipod6g`), load themes, preview screenshots, open the theme page, and install directly into `/.rockbox` on the device.
-- Sync: Choose full or partial mode. In partial mode, add folders from your library base; the sync will mirror just those selections.
+## Scripts Overview (CLI and via GUI “Advanced”)
 
-## Parameterized Scripts (CLI and via GUI)
-
-These scripts accept arguments and are wired into the GUI’s “Tasks (Advanced)” tab.
-
-- `scripts/covers.py` — `--root`, `--size WIDTHxHEIGHT`
-- `scripts/embedd_resize.py` — `--folder`, `--size WIDTHxHEIGHT`
-- `scripts/embed_resize_no_cover.py` — `--folder`, `--max-size`
-- `scripts/downsampler.py` — `--source`, `--jobs`
-- `scripts/order_playlist.py` — `--folder`, `--include-subfolders`, `--ext`, `--dry-run`
-- `scripts/order_renamer.py` — `--base-dir`
-- `scripts/m4a2flac.py` — positional `base`
-- `scripts/inspect_flac.py` — positional `file`
-- `scripts/sort_by_artist.py` — `--source`, `--separator`, `--dry-run`
-- `scripts/lyrics_local.py` — `--music-dir`, `--lyrics-subdir`, `--ext`, `--genius-token`
-- `scripts/youtube_organizer.py` — `--source`, `--target-format`, `--lastfm-key`, `--jobs`
-- `scripts/flac2alac.py` — `source`, `output`, `--jobs`
-
-Additional utilities in `scripts/` (e.g., `tag_genres.py`, `daily_mix.py`, `themes.py`) can be used directly from CLI; some may not appear in the GUI yet.
+- `scripts/covers.py`: Resize `cover.jpg` recursively to a fixed size. Options: `--root`, `--size WxH`. Depends on `Pillow`.
+- `scripts/embedd_resize.py`: Resize and re‑embed front cover images in FLAC files to a fixed size. Options: `--folder`, `--size WxH`. Depends on `mutagen`, `Pillow`.
+- `scripts/embed_resize_no_cover.py`: If no front cover exists, promote the first non‑cover image to front cover and resize with aspect‑ratio. Options: `--folder`, `--max-size`. Depends on `mutagen`, `Pillow`.
+- `scripts/downsampler.py`: In‑place downsample FLAC files to 16‑bit/44.1kHz. Options: `--source`, `--jobs`. Requires `ffmpeg`/`ffprobe`.
+- `scripts/flac2alac.py`: Recursively convert FLAC → ALAC (`.m4a`) preserving cover art and metadata. Args: `source`, `output`, `--jobs`. Requires `ffmpeg`.
+- `scripts/m4a2flac.py`: Recursively convert `.m4a` → `.flac` under a base folder. Arg: `base`. Requires `ffmpeg`.
+- `scripts/inspect_flac.py`: Inspect a FLAC’s tags, lyrics tags, and embedded pictures. Arg: `file`. Depends on `mutagen`.
+- `scripts/lyrics_local.py`: Export embedded lyrics from FLACs to sidecars; optional Genius fallback. Options: `--music-dir`, `--lyrics-subdir`, `--ext`, `--genius-token`. Depends on `mutagen`, optionally `lyricsgenius`.
+- `scripts/order_playlist.py`: Prefix files in date order (e.g., `01. …`) for playlist folders. Options: `--folder`, `--include-subfolders`, `--ext`, `--dry-run`.
+- `scripts/order_renamer.py`: Rename `001 Title.flac` → `01. Title.flac` in place. Option: `--base-dir`.
+- `scripts/sort_by_artist.py`: Move `Artist - Album` folders under `Artist/` parent directories. Options: `--source`, `--separator`, `--dry-run`.
+- `scripts/youtube_organizer.py`: Organize `.m4a` files named like `Playlist - 001 Artist - Title [...]` into per‑playlist folders, convert to FLAC, and tag via Last.fm. Options: `--source`, `--target-format`, `--lastfm-key`, `--jobs`. Requires `ffmpeg`, `requests`, `mutagen`.
+- `scripts/daily_mix.py`: Build themed “Daily Mix” playlists using the Library/Device DB. See `--help` for advanced theme/seed options. Depends on `mutagen` (optional for durations).
+- `scripts/themes.py`: Browse, preview, download, and install Rockbox themes by target. Subcommands: `list-devices`, `list-themes`, `show`, `download`, `install`. Depends on `requests`, `beautifulsoup4`, optionally `tqdm`.
+- `scripts/rockbox_detector.py`: Cross‑platform Rockbox device detection using `psutil`.
+- `scripts/tag_genres.py`: Fill in genre tags using AcoustID + MusicBrainz. Options include `--library`, `--overwrite`, `--only-missing`, `--ext`, `--folder-fallback`. Depends on `mutagen`, `acoustid` (pyacoustid), `musicbrainzngs`; requires `fpcalc` and `ACOUSTID_API_KEY`.
+- `scripts/simple_mb_genres.py`: Simpler MusicBrainz‑based genre tagging helper. Depends on `mutagen`, `musicbrainzngs`.
+- `scripts/read_rockbox_tcd_dynamic.py`: Utility to read Rockbox “tcd” dynamic playlists (developer/advanced).
 
 ## Rockbox Device Detection
 
-- Backed by `scripts/rockbox_detector.py` (cross‑platform, uses `psutil`). Detects drives that have a `/.rockbox` folder and surfaces label, capacity, and mountpoint.
-- The GUI enhances detection with heuristics to infer device/target names and iPod variants when possible.
+- Implemented via `scripts/rockbox_detector.py`. Detects drives with a `/.rockbox` folder and surfaces label, capacity, and mountpoint. The GUI augments this to infer device names and iPod variants when possible.
 
-## Notes & Tips
+## Tips & Troubleshooting
 
-- ffmpeg: required for conversions (`flac2alac`, `m4a2flac`) and the optional downsampling step in Sync.
-- Large folders: Sync runs in a background thread and streams logs into the UI. You can stop mid‑sync; partial results remain on disk.
-- Themes preview: Requires `requests`. If previews fail, open the theme page and install from there, or install via CLI (`scripts/themes.py`).
+- Build the DB first: Open “Database” → Source: “Library” → “Scan”. Search and Daily Mix depend on this.
+- `ffmpeg` errors: Ensure `ffmpeg`/`ffprobe` are installed and in PATH.
+- No device found: Install `psutil`, plug/mount your device, or set a dummy device path in Settings.
+- Missing images in previews: Install `Pillow`.
+- GUI won’t start: Ensure `PySide6` and Python 3.9+.
 
-## Troubleshooting
+—
 
-- GUI doesn’t start: Ensure `PySide6` is installed and you’re running Python 3.9+.
-- No device found: Install `psutil`, plug/mount your device, or configure a dummy device path in Settings.
-- Images not visible in previews: Install `Pillow`.
-- Conversions fail: Verify `ffmpeg` is installed and available in PATH.
-
----
-
-Happy syncing! If you want help wiring additional scripts into the GUI, see `app/tasks_registry.py` for examples.
+If you want help wiring additional scripts into the GUI, see `app/tasks_registry.py` for examples.

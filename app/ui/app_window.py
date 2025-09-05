@@ -181,17 +181,15 @@ class AppWindow(QMainWindow):
             it.setData(Qt.UserRole, int(page_index))
             self.nav.addItem(it)
 
-        add_header("Library")
-        add_page("📚  Library", 0)
-        add_page("🔎  Search", 1)
-        add_page("💿  Device", 2)
-        add_page("🗃️  Database", 3)
-        add_page("🔄  Sync", 4)
-        add_page("🎛️  Rockbox", 5)
-        add_page("🎧  Playlists", 6)
-        add_page("⚙️  Settings", 7)
-        add_header("Advanced")
-        add_page("🧪  Tasks (Advanced)", 8)
+        add_page("Library", 0)
+        add_page("Device", 2)
+        add_page("Search", 1)
+        add_page("Sync", 4)
+        add_page("Playlists", 6)
+        add_page("Database", 3)
+        add_page("Settings", 7)
+        add_page("Rockbox", 5)
+        add_page("Advanced", 8)
 
         def on_nav_changed():
             it = self.nav.currentItem()
@@ -247,13 +245,7 @@ class AppWindow(QMainWindow):
     def _choose_active_device(self, devices):
         if not devices:
             return None
-        # Prefer device that matches configured device_root, else first
-        dev_root = (self.settings.get('device_root') or '').strip()
-        if dev_root:
-            for d in devices:
-                mp = (d.get('mountpoint') or '').strip()
-                if mp and (dev_root.startswith(mp) or mp.startswith(dev_root)):
-                    return d
+        # Pick the first detected device (no user-configured preference)
         return devices[0]
 
     def _update_device_indicator(self):
@@ -322,12 +314,7 @@ class AppWindow(QMainWindow):
         b = QPushButton("Browse"); b.clicked.connect(lambda: self._browse_dir_into(self.set_music_root)); h.addWidget(b)
         form.addRow("Music root", music_row)
 
-        # Device root row
-        dev_row = QWidget(); h2 = QHBoxLayout(dev_row); h2.setContentsMargins(0,0,0,0)
-        self.set_device_root = QLineEdit(self.settings.get("device_root", str(ROOT)))
-        h2.addWidget(self.set_device_root, 1)
-        bdev = QPushButton("Browse"); bdev.clicked.connect(lambda: self._browse_dir_into(self.set_device_root)); h2.addWidget(bdev)
-        form.addRow("Device root", dev_row)
+        # Device root setting removed to avoid confusion
 
         self.set_lyrics_subdir = QLineEdit(self.settings.get("lyrics_subdir", "Lyrics"))
         form.addRow("Lyrics subfolder", self.set_lyrics_subdir)
@@ -392,7 +379,6 @@ class AppWindow(QMainWindow):
 
     def on_save_settings(self):
         self.settings["music_root"] = self.set_music_root.text()
-        self.settings["device_root"] = self.set_device_root.text()
         self.settings["lyrics_subdir"] = self.set_lyrics_subdir.text()
         self.settings["lyrics_ext"] = self.set_lyrics_ext.text()
         self.settings["cover_size"] = self.set_cover_size.text()
@@ -419,7 +405,6 @@ class AppWindow(QMainWindow):
     def on_reload_settings(self):
         self.settings = load_settings()
         self.set_music_root.setText(self.settings.get('music_root', ''))
-        self.set_device_root.setText(self.settings.get('device_root', ''))
         self.set_lyrics_subdir.setText(self.settings.get('lyrics_subdir', 'Lyrics'))
         self.set_lyrics_ext.setText(self.settings.get('lyrics_ext', '.lrc'))
         self.set_cover_size.setText(self.settings.get('cover_size', '100x100'))
@@ -505,6 +490,8 @@ class AppWindow(QMainWindow):
         key = spec.get("key", "")
         s = self.settings
         if key in ("--root", "--folder", "--music-dir", "base", "source"):
+            return s.get("music_root", spec.get("default"))
+        if key == "--library":
             return s.get("music_root", spec.get("default"))
         if key == "--size":
             return s.get("cover_size", spec.get("default"))

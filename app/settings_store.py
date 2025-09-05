@@ -3,7 +3,6 @@ from core import CONFIG_PATH
 
 DEFAULT_SETTINGS = {
     "music_root": str(CONFIG_PATH.parents[1]),
-    "device_root": str(CONFIG_PATH.parents[1]),
     "dummy_device_path": "",
     "dummy_device_enabled": False,
     "lyrics_subdir": "Lyrics",
