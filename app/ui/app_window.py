@@ -15,7 +15,8 @@ from settings_store import load_settings, save_settings
 from logging_utils import setup_logging, ui_log
 from tasks_registry import get_tasks
 from ui.explorer_pane import ExplorerPane
-from ui.tracks_pane import TracksPane
+from ui.search_pane import SearchPane
+from ui.database_pane import DatabasePane
 from ui.device_pane import DeviceExplorerPane
 from ui.sync_pane import SyncPane
 from ui.rockbox_pane import RockboxPane
@@ -93,17 +94,23 @@ class AppWindow(QMainWindow):
         ex_layout.addWidget(self.explorer)
         self.stack.addWidget(self.explore_tab)
 
+        # Search
+        self.search_tab = QWidget(); se_layout = QVBoxLayout(self.search_tab)
+        self.search = SearchPane(self, self.search_tab)
+        se_layout.addWidget(self.search)
+        self.stack.addWidget(self.search_tab)
+
         # Device
         self.device_tab = QWidget(); dv_layout = QVBoxLayout(self.device_tab)
         self.device_explorer = DeviceExplorerPane(self, self.device_tab)
         dv_layout.addWidget(self.device_explorer)
         self.stack.addWidget(self.device_tab)
 
-        # Tracks
-        self.tracks_tab = QWidget(); tr_layout = QVBoxLayout(self.tracks_tab)
-        self.tracks = TracksPane(self, self.tracks_tab)
-        tr_layout.addWidget(self.tracks)
-        self.stack.addWidget(self.tracks_tab)
+        # Database
+        self.db_tab = QWidget(); db_layout = QVBoxLayout(self.db_tab)
+        self.db = DatabasePane(self, self.db_tab)
+        db_layout.addWidget(self.db)
+        self.stack.addWidget(self.db_tab)
 
         # Sync
         self.sync_tab = QWidget(); sy_layout = QVBoxLayout(self.sync_tab)
@@ -141,13 +148,14 @@ class AppWindow(QMainWindow):
 
         add_header("Library")
         add_page("📚  Library", 0)
-        add_page("💿  Device", 1)
-        add_page("🎵  Tracks", 2)
-        add_page("🔄  Sync", 3)
-        add_page("🎛️  Rockbox", 4)
-        add_page("⚙️  Settings", 5)
+        add_page("🔎  Search", 1)
+        add_page("💿  Device", 2)
+        add_page("🗃️  Database", 3)
+        add_page("🔄  Sync", 4)
+        add_page("🎛️  Rockbox", 5)
+        add_page("⚙️  Settings", 6)
         add_header("Advanced")
-        add_page("🧪  Tasks (Advanced)", 6)
+        add_page("🧪  Tasks (Advanced)", 7)
 
         def on_nav_changed():
             it = self.nav.currentItem()

@@ -207,7 +207,10 @@ def lookup_genres_with_acoustid(file_path: Path, api_key: str,
 
     # MusicBrainz: fetch recording with tags + references
     rate_limit_sleep(rl_ts)
-    rec = mb_client.get_recording_by_id(best_recid, includes=["tags", "releases", "artists"]).get("recording")
+    try:
+        rec = mb_client.get_recording_by_id(best_recid, includes=["tags", "releases", "artists"]).get("recording")
+    except Exception:
+        return []
 
     def weighted_names(obj) -> List[Tuple[str, int]]:
         if not obj:
@@ -261,7 +264,10 @@ def lookup_genres_with_acoustid(file_path: Path, api_key: str,
         mb_release = MB_RELEASE_CACHE.get(rel_id)
         if not mb_release:
             rate_limit_sleep(rl_ts)
-            mb_release = mb_client.get_release_by_id(rel_id, includes=["tags"]).get("release")
+            try:
+                mb_release = mb_client.get_release_by_id(rel_id, includes=["tags"]).get("release")
+            except Exception:
+                mb_release = None
             MB_RELEASE_CACHE[rel_id] = mb_release
         if add_from(mb_release):
             return ordered[:max_genres]
@@ -270,7 +276,10 @@ def lookup_genres_with_acoustid(file_path: Path, api_key: str,
             mb_release_group = MB_RG_CACHE.get(rgid)
             if not mb_release_group:
                 rate_limit_sleep(rl_ts)
-                mb_release_group = mb_client.get_release_group_by_id(rgid, includes=["tags"]).get("release-group")
+                try:
+                    mb_release_group = mb_client.get_release_group_by_id(rgid, includes=["tags"]).get("release-group")
+                except Exception:
+                    mb_release_group = None
                 MB_RG_CACHE[rgid] = mb_release_group
             if add_from(mb_release_group):
                 return ordered[:max_genres]
@@ -281,7 +290,10 @@ def lookup_genres_with_acoustid(file_path: Path, api_key: str,
         mb_artist = MB_ARTIST_CACHE.get(art_id)
         if not mb_artist:
             rate_limit_sleep(rl_ts)
-            mb_artist = mb_client.get_artist_by_id(art_id, includes=["tags"]).get("artist")
+            try:
+                mb_artist = mb_client.get_artist_by_id(art_id, includes=["tags"]).get("artist")
+            except Exception:
+                mb_artist = None
             MB_ARTIST_CACHE[art_id] = mb_artist
         add_from(mb_artist)
 
@@ -366,7 +378,10 @@ def lookup_genres_with_tags(audio_path: Path,
 
     # Fetch details as in AcoustID path, but add incrementally until limit
     rate_limit_sleep(rl_ts)
-    rec = mb_client.get_recording_by_id(rec_id, includes=["tags", "releases", "artists"]).get("recording")
+    try:
+        rec = mb_client.get_recording_by_id(rec_id, includes=["tags", "releases", "artists"]).get("recording")
+    except Exception:
+        return []
 
     def weighted_names(obj) -> List[Tuple[str, int]]:
         if not obj:
@@ -421,7 +436,10 @@ def lookup_genres_with_tags(audio_path: Path,
         mb_release = MB_RELEASE_CACHE.get(rel_id)
         if not mb_release:
             rate_limit_sleep(rl_ts)
-            mb_release = mb_client.get_release_by_id(rel_id, includes=["tags"]).get("release")
+            try:
+                mb_release = mb_client.get_release_by_id(rel_id, includes=["tags"]).get("release")
+            except Exception:
+                mb_release = None
             MB_RELEASE_CACHE[rel_id] = mb_release
         if add_from(mb_release):
             return ordered[:max_genres]
@@ -430,7 +448,10 @@ def lookup_genres_with_tags(audio_path: Path,
             mb_release_group = MB_RG_CACHE.get(rgid)
             if not mb_release_group:
                 rate_limit_sleep(rl_ts)
-                mb_release_group = mb_client.get_release_group_by_id(rgid, includes=["tags"]).get("release-group")
+                try:
+                    mb_release_group = mb_client.get_release_group_by_id(rgid, includes=["tags"]).get("release-group")
+                except Exception:
+                    mb_release_group = None
                 MB_RG_CACHE[rgid] = mb_release_group
             if add_from(mb_release_group):
                 return ordered[:max_genres]
@@ -441,7 +462,10 @@ def lookup_genres_with_tags(audio_path: Path,
         mb_artist = MB_ARTIST_CACHE.get(art_id)
         if not mb_artist:
             rate_limit_sleep(rl_ts)
-            mb_artist = mb_client.get_artist_by_id(art_id, includes=["tags"]).get("artist")
+            try:
+                mb_artist = mb_client.get_artist_by_id(art_id, includes=["tags"]).get("artist")
+            except Exception:
+                mb_artist = None
             MB_ARTIST_CACHE[art_id] = mb_artist
         add_from(mb_artist)
 
@@ -616,6 +640,7 @@ def parse_args():
     ap.add_argument("--use-tag-search", action="store_true", help="Use MusicBrainz title/artist search if AcoustID fails or is disabled.")
     ap.add_argument("--folder-fallback", action="store_true", help="Infer genre from folder names if lookups fail.")
     ap.add_argument("--max-genres", type=int, default=5, help="Maximum number of genres to write (default: 5).")
+    ap.add_argument("--http-timeout", type=float, default=15.0, help="HTTP timeout in seconds for MusicBrainz requests (default: 15).")
     return ap.parse_args()
 
 def main():
@@ -627,6 +652,16 @@ def main():
 
     # Init MusicBrainz client
     musicbrainzngs.set_useragent(MB_APP[0], MB_APP[1], "https://musicbrainz.org")
+    # Be nice to MB servers and avoid indefinite hangs
+    try:
+        musicbrainzngs.set_rate_limit(True)
+    except Exception:
+        pass
+    try:
+        # Pass timeout to underlying requests if available
+        musicbrainzngs.set_requests_kwargs({"timeout": args.http_timeout})
+    except Exception:
+        pass
 
     # Sensible defaults: if no lookup method selected, enable tag search by default
     if not (args.use_acoustid or args.use_tag_search or args.folder_fallback):
