@@ -1,10 +1,22 @@
 :root {
-  bg: #F7F8FA;
+  /* Material You inspired (Light) */
+  primary: #6750A4;
+  on_primary: #FFFFFF;
+  secondary: #625B71;
+  on_secondary: #FFFFFF;
   surface: #FFFFFF;
-  text: #1E1E1E;
+  surface_container: #F2EDF7;
+  on_surface: #1C1B1F;
+  surface_variant: #E7E0EC;
+  on_surface_variant: #49454F;
+  outline: #79747E;
+
+  /* Legacy fallbacks used in app */
+  bg: #F5F6F8;
+  text: #1C1B1F;
   muted: #6B7280;
-  accent: #4F6BED;
-  selection_bg: #E6EEFF;
-  selection_fg: #1F2937;
+  accent: #6750A4;
+  selection_bg: #EADDFF;
+  selection_fg: #1C1B1F;
   entry_bg: #FFFFFF;
 }

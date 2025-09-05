@@ -1,6 +1,18 @@
 :root {
-  bg: #C0C0C0;
+  /* Classic Windows 98 vibes, mapped to tokens */
+  primary: #000080;
+  on_primary: #FFFFFF;
+  secondary: #808080;
+  on_secondary: #FFFFFF;
   surface: #DFDFDF;
+  surface_container: #E9E9E9;
+  on_surface: #000000;
+  surface_variant: #BDBDBD;
+  on_surface_variant: #202020;
+  outline: #9E9E9E;
+
+  /* Legacy fallbacks */
+  bg: #C0C0C0;
   text: #000000;
   muted: #202020;
   accent: #000080;

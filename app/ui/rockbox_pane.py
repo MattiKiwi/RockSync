@@ -62,7 +62,7 @@ class RockboxPane(QWidget):
         self.status = QLabel("Idle")
         hdr.addWidget(self.status)
         hdr.addStretch(1)
-        self.scan_btn = QPushButton("Scan Now"); self.scan_btn.clicked.connect(self.scan_now); hdr.addWidget(self.scan_btn)
+        self.scan_btn = QPushButton("Scan Now"); self.scan_btn.setProperty("accent", True); self.scan_btn.clicked.connect(self.scan_now); hdr.addWidget(self.scan_btn)
         self.auto_cb = QCheckBox("Auto refresh"); self.auto_cb.stateChanged.connect(self._toggle_auto); hdr.addWidget(self.auto_cb)
         root.addLayout(hdr)
 
@@ -160,7 +160,7 @@ class RockboxPane(QWidget):
         # Buttons
         pbtns = QHBoxLayout()
         self.theme_open_btn = QPushButton("Open Page")
-        self.theme_install_btn = QPushButton("Install to Device")
+        self.theme_install_btn = QPushButton("Install to Device"); self.theme_install_btn.setProperty("accent", True)
         pbtns.addWidget(self.theme_open_btn)
         pbtns.addWidget(self.theme_install_btn)
         pbtns.addStretch(1)

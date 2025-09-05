@@ -5,7 +5,8 @@ from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QPushButton,
-    QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit, QFileDialog, QMenu
+    QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit, QFileDialog, QMenu,
+    QDialog, QFormLayout, QComboBox, QMessageBox, QInputDialog
 )
 
 
@@ -35,6 +36,9 @@ class ExplorerPane(QWidget):
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(lambda: self.navigate(self.explorer_path.text()))
         top.addWidget(refresh_btn)
+        import_btn = QPushButton("Import…")
+        import_btn.clicked.connect(self._on_import_music)
+        top.addWidget(import_btn)
         root.addLayout(top)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -52,23 +56,106 @@ class ExplorerPane(QWidget):
 
         right = QWidget()
         rlayout = QVBoxLayout(right)
+        # Info panel (cover + metadata + lyrics)
+        self.info_panel = QWidget(); info_v = QVBoxLayout(self.info_panel)
         self.cover_label = QLabel("No cover")
         self.cover_label.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        rlayout.addWidget(self.cover_label)
-        rlayout.addWidget(QLabel("Metadata"))
-        self.meta_text = QTextEdit()
-        self.meta_text.setReadOnly(True)
-        rlayout.addWidget(self.meta_text, 1)
-        rlayout.addWidget(QLabel("Lyrics (preview)"))
-        self.lyrics_text = QTextEdit()
-        self.lyrics_text.setReadOnly(True)
-        rlayout.addWidget(self.lyrics_text, 1)
+        info_v.addWidget(self.cover_label)
+        info_v.addWidget(QLabel("Metadata"))
+        self.meta_text = QTextEdit(); self.meta_text.setReadOnly(True); self.meta_text.setAcceptRichText(True)
+        info_v.addWidget(self.meta_text, 1)
+        info_v.addWidget(QLabel("Lyrics (preview)"))
+        self.lyrics_text = QTextEdit(); self.lyrics_text.setReadOnly(True)
+        info_v.addWidget(self.lyrics_text, 1)
+        rlayout.addWidget(self.info_panel, 1)
+        # Playlist panel
+        self.playlist_panel = QWidget(); self.playlist_panel.setVisible(False)
+        pl_v = QVBoxLayout(self.playlist_panel)
+        pl_v.addWidget(QLabel("Playlist Tracks"))
+        from PySide6.QtWidgets import QTreeWidget as _QTreeWidget, QTreeWidgetItem as _QTreeWidgetItem
+        self.playlist_list = _QTreeWidget(); self.playlist_list.setColumnCount(2)
+        self.playlist_list.setHeaderLabels(["#", "Track"])
+        self.playlist_list.setAlternatingRowColors(True)
+        self.playlist_list.itemDoubleClicked.connect(self._on_playlist_open)
+        pl_v.addWidget(self.playlist_list, 1)
+        rlayout.addWidget(self.playlist_panel, 1)
         splitter.addWidget(right)
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
 
         self.navigate(self.explorer_path.text())
+
+    # ----- Import dialog -----
+    def _on_import_music(self):
+        dlg = ImportDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        params = dlg.get_values()
+        files = params.get('files') or []
+        if not files:
+            return
+        music_root = self.controller.settings.get('music_root', '')
+        if not music_root:
+            QMessageBox.warning(self, "No Music Root", "Please set Music root in Settings first.")
+            return
+        try:
+            if params['mode'] == 'Album':
+                artist = params.get('artist', '').strip()
+                album = params.get('album', '').strip()
+                dest = os.path.join(music_root, 'Albums', artist, album)
+                os.makedirs(dest, exist_ok=True)
+                copied = self._copy_files(files, dest)
+                QMessageBox.information(self, "Import Complete", f"Imported {len(copied)} files to\n{dest}")
+                self.navigate(dest)
+            elif params['mode'] == 'Playlist':
+                name = params.get('playlist', '').strip()
+                sub = params.get('subfolder', '').strip()
+                base = os.path.join(music_root, 'Playlists')
+                # Copy files into Playlists[/subfolder]/name/
+                dest_dir = os.path.join(base, sub, name) if sub else os.path.join(base, name)
+                os.makedirs(dest_dir, exist_ok=True)
+                copied = self._copy_files(files, dest_dir)
+                QMessageBox.information(self, "Import Complete", f"Imported {len(copied)} files to\n{dest_dir}")
+                self.navigate(dest_dir)
+            else:  # Track
+                dest = os.path.join(music_root, 'Tracks')
+                os.makedirs(dest, exist_ok=True)
+                copied = self._copy_files(files, dest)
+                QMessageBox.information(self, "Import Complete", f"Imported {len(copied)} files to\n{dest}")
+                self.navigate(dest)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import: {e}")
+
+    def _copy_files(self, files, dest_dir):
+        import shutil
+        copied = []
+        for src in files:
+            try:
+                base = os.path.basename(src)
+                name, ext = os.path.splitext(base)
+                target = os.path.join(dest_dir, base)
+                i = 1
+                while os.path.exists(target):
+                    target = os.path.join(dest_dir, f"{name}_{i}{ext}")
+                    i += 1
+                shutil.copy2(src, target)
+                copied.append(target)
+            except Exception:
+                continue
+        return copied
+
+    def _write_m3u8(self, m3u_path, files):
+        root = os.path.dirname(m3u_path)
+        lines = []
+        for f in files:
+            try:
+                rel = os.path.relpath(f, start=root)
+            except Exception:
+                rel = f
+            lines.append(rel.replace('\\', '/'))
+        with open(m3u_path, 'w', encoding='utf-8') as fh:
+            fh.write("\n".join(lines))
 
     # Navigation helpers
     def _browse(self):
@@ -157,12 +244,17 @@ class ExplorerPane(QWidget):
 
     # Info panel
     def show_info(self, path):
+        # Reset views and toggle depending on selection type
+        self._toggle_playlist_mode(False)
         self.cover_label.setText("No cover")
         self.cover_label.setPixmap(QPixmap())
         self.meta_text.clear()
         self.lyrics_text.clear()
 
         ext = os.path.splitext(path)[1].lower()
+        if ext in {'.m3u8', '.m3u'}:
+            self._show_playlist(path)
+            return
         supported = {'.flac', '.mp3', '.m4a', '.alac', '.aac', '.ogg', '.opus', '.wav'}
         if ext not in supported:
             self.meta_text.setPlainText(f"Selected: {os.path.basename(path)}\nNot a supported audio file.")
@@ -174,34 +266,107 @@ class ExplorerPane(QWidget):
             self.meta_text.setPlainText(f"Error reading file: {e}")
             return
 
-        meta_lines = []
+        # Collect metadata rows as (label, value)
+        meta_rows = []
         try:
             try:
                 easy = MFile(path, easy=True)
                 tags = getattr(easy, 'tags', None) or {}
             except Exception:
                 tags = getattr(audio, 'tags', None) or {}
-            def is_lyrics_key(kstr):
-                kl = str(kstr).lower(); return ('lyric' in kl) or ('uslt' in kl) or kl.endswith('©lyr')
-            for k, v in (tags.items() if hasattr(tags, 'items') else []):
-                if is_lyrics_key(k):
-                    continue
+            def is_skip_key(kstr):
+                kl = str(kstr).lower()
+                if ('lyric' in kl) or ('uslt' in kl) or kl.endswith('©lyr'):
+                    return True
+                # Skip embedded artwork and pictures
+                if ('apic' in kl) or ('covr' in kl) or ('cover' in kl) or ('picture' in kl) or ('pics' in kl):
+                    return True
+                return False
+            # Preferred ordering of common music tags
+            preferred_order = [
+                'title','artist','album','albumartist','tracknumber','discnumber',
+                'date','year','genre','composer','comment'
+            ]
+            seen_keys = set()
+            def norm_val(v):
                 if isinstance(v, list):
-                    val = "; ".join(str(x) for x in v)
-                else:
-                    val = str(v)
-                if len(val) > 500:
-                    val = val[:500] + '…'
-                meta_lines.append(f"{k}: {val}")
+                    v = "; ".join(str(x) for x in v)
+                v = str(v)
+                return (v[:500] + '…') if len(v) > 500 else v
+            # If we have easy tags, they use human-friendly keys
+            if hasattr(tags, 'get'):
+                for key in preferred_order:
+                    if key in tags and not is_skip_key(key):
+                        meta_rows.append((key.title(), norm_val(tags.get(key))))
+                        seen_keys.add(key)
+                # Add remaining non-lyrics, non-duplicate tags
+                for k, v in tags.items():
+                    kl = str(k).lower()
+                    if kl in seen_keys or is_skip_key(kl):
+                        continue
+                    meta_rows.append((k.title(), norm_val(v)))
+            else:
+                # Fallback to raw tags mapping
+                for k, v in (tags.items() if hasattr(tags, 'items') else []):
+                    if is_skip_key(k):
+                        continue
+                    meta_rows.append((str(k), norm_val(v)))
         except Exception:
             pass
+        # Technical info
         try:
-            if getattr(audio, 'info', None) and getattr(audio.info, 'length', None):
-                secs = int(audio.info.length)
-                meta_lines.insert(0, f"Duration: {secs//60}:{secs%60:02d}")
+            if getattr(audio, 'info', None):
+                info = audio.info
+                # Duration
+                if getattr(info, 'length', None):
+                    secs = int(info.length)
+                    meta_rows.insert(0, ("Duration", f"{secs//60}:{secs%60:02d}"))
+                # Bitrate (kbps)
+                br = getattr(info, 'bitrate', None)
+                if isinstance(br, (int, float)) and br > 0:
+                    meta_rows.append(("Bitrate", f"{int(br)//1000} kbps"))
+                # Sample rate
+                sr = getattr(info, 'sample_rate', getattr(info, 'samplerate', None))
+                if isinstance(sr, (int, float)) and sr > 0:
+                    meta_rows.append(("Sample Rate", f"{int(sr)} Hz"))
+                # Channels
+                ch = getattr(info, 'channels', None)
+                if isinstance(ch, int) and ch > 0:
+                    meta_rows.append(("Channels", str(ch)))
+                # Bits per sample (lossless)
+                bps = getattr(info, 'bits_per_sample', getattr(info, 'bits_per_sample', None))
+                if isinstance(bps, int) and bps > 0:
+                    meta_rows.append(("Bits/Sample", str(bps)))
         except Exception:
             pass
-        self.meta_text.setPlainText("\n".join(meta_lines) or "No tags found.")
+
+        # Codec/container class
+        try:
+            cname = audio.__class__.__name__
+            if cname:
+                meta_rows.append(("Format", cname))
+        except Exception:
+            pass
+
+        # Render as a simple HTML table for nicer display
+        if not meta_rows:
+            self.meta_text.setPlainText("No tags found.")
+        else:
+            html = [
+                '<html><head><style>'
+                'table{border-collapse:collapse; width:100%;}'
+                'th,td{padding:4px 6px; vertical-align:top;}'
+                'th{width:28%; text-align:right; color:#555;}'
+                'tr:nth-child(even){background:#f6f6f6;}'
+                '</style></head><body>'
+                '<table>'
+            ]
+            for label, value in meta_rows:
+                safe_label = self._escape_html(label)
+                safe_value = self._escape_html(value).replace('\n', '<br>')
+                html.append(f'<tr><th>{safe_label}</th><td><div>{safe_value}</div></td></tr>')
+            html.append('</table></body></html>')
+            self.meta_text.setHtml("".join(html))
 
         # Lyrics
         lyrics_text = self._extract_lyrics_text(audio, path)
@@ -231,6 +396,72 @@ class ExplorerPane(QWidget):
                 self.cover_label.setText("")
             else:
                 self.cover_label.setText("Cover present (install Pillow to display)")
+
+    # Playlist helpers
+    def _toggle_playlist_mode(self, on: bool):
+        self.info_panel.setVisible(not on)
+        self.playlist_panel.setVisible(on)
+
+    def _show_playlist(self, m3u_path: str):
+        self._toggle_playlist_mode(True)
+        self.playlist_list.clear()
+        base_dir = os.path.dirname(m3u_path)
+        entries = []
+        titles = {}
+        try:
+            with open(m3u_path, 'r', encoding='utf-8', errors='ignore') as fh:
+                last_title = None
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('#'):
+                        if line.upper().startswith('#EXTINF:'):
+                            # Format: #EXTINF:duration,Artist - Title
+                            parts = line.split(',', 1)
+                            if len(parts) == 2:
+                                last_title = parts[1].strip()
+                        continue
+                    # Non-comment line: a file path (relative or absolute)
+                    p = line
+                    if not os.path.isabs(p):
+                        p = os.path.normpath(os.path.join(base_dir, p))
+                    entries.append(p)
+                    if last_title:
+                        titles[p] = last_title
+                        last_title = None
+        except Exception as e:
+            self.playlist_list.setHeaderLabels(["#", f"Error reading playlist: {e}"])
+            return
+        # Populate list
+        for idx, p in enumerate(entries, start=1):
+            label = titles.get(p) or os.path.basename(p)
+            it = QTreeWidgetItem([str(idx), label])
+            it.setData(0, Qt.UserRole, p)
+            self.playlist_list.addTopLevelItem(it)
+        if not entries:
+            it = QTreeWidgetItem(["", "(Empty playlist)"])
+            self.playlist_list.addTopLevelItem(it)
+
+    def _on_playlist_open(self, item, column):
+        p = item.data(0, Qt.UserRole)
+        if p and os.path.isfile(p):
+            # Switch back to info view and show file metadata
+            self._toggle_playlist_mode(False)
+            self.show_info(p)
+
+    @staticmethod
+    def _escape_html(s: str) -> str:
+        try:
+            return (
+                s.replace('&', '&amp;')
+                 .replace('<', '&lt;')
+                 .replace('>', '&gt;')
+                 .replace('"', '&quot;')
+                 .replace("'", '&#39;')
+            )
+        except Exception:
+            return str(s)
 
     def _set_cover_from_pillow(self, img_bytes: bytes) -> bool:
         try:
@@ -309,3 +540,151 @@ class ExplorerPane(QWidget):
             return _dt.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
         except Exception:
             return ''
+
+class ImportDialog(QDialog):
+    def __init__(self, parent: ExplorerPane):
+        super().__init__(parent)
+        self.setWindowTitle("Import Music into Library")
+        self.files = []
+        self._build_ui()
+
+    def _build_ui(self):
+        from PySide6.QtWidgets import QDialogButtonBox
+        v = QVBoxLayout(self)
+        form = QFormLayout()
+        v.addLayout(form)
+
+        # Files selector
+        files_row = QWidget(); h = QHBoxLayout(files_row); h.setContentsMargins(0,0,0,0)
+        self.files_edit = QLineEdit(); self.files_edit.setReadOnly(True)
+        b = QPushButton("Select Files…"); b.clicked.connect(self._pick_files)
+        h.addWidget(self.files_edit, 1); h.addWidget(b)
+        form.addRow("Files", files_row)
+
+        # Mode
+        self.mode = QComboBox(); self.mode.addItems(["Album", "Playlist", "Track"])
+        self.mode.currentTextChanged.connect(self._on_mode_changed)
+        form.addRow("Import as", self.mode)
+
+        # Album fields
+        self.album_artist = QLineEdit(); self.album_artist.setPlaceholderText("Auto-detected if possible")
+        form.addRow("Artist", self.album_artist)
+        self.album_title = QLineEdit(); self.album_title.setPlaceholderText("Auto-detected if possible")
+        form.addRow("Album", self.album_title)
+
+        # Playlist fields
+        self.playlist_name = QLineEdit(); form.addRow("Playlist name", self.playlist_name)
+        self.playlist_sub = QLineEdit(); form.addRow("Subfolder (optional)", self.playlist_sub)
+
+        # Buttons
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+
+        self._update_visibility()
+
+    def _pick_files(self):
+        exts = ['*.flac','*.mp3','*.m4a','*.alac','*.aac','*.ogg','*.opus','*.wav']
+        files, _ = QFileDialog.getOpenFileNames(self, "Select music files", os.getcwd(), f"Audio Files ({' '.join(exts)})")
+        if files:
+            self.files = files
+            self.files_edit.setText(f"{len(files)} file(s) selected")
+            # Try to auto-fill album/artist when importing as Album
+            if self.mode.currentText() == 'Album':
+                self._autofill_album_fields()
+
+    def _update_visibility(self):
+        mode = self.mode.currentText()
+        show_album = (mode == 'Album')
+        show_playlist = (mode == 'Playlist')
+        self.album_artist.setVisible(show_album)
+        self.album_title.setVisible(show_album)
+        self.playlist_name.setVisible(show_playlist)
+        self.playlist_sub.setVisible(show_playlist)
+
+    def _on_mode_changed(self, _):
+        self._update_visibility()
+        if self.mode.currentText() == 'Album' and self.files:
+            self._autofill_album_fields()
+
+    def _autofill_album_fields(self):
+        try:
+            from mutagen import File as MFile
+        except Exception:
+            return
+        artists = []
+        albums = []
+        for p in (self.files or []):
+            try:
+                easy = MFile(p, easy=True)
+                tags = getattr(easy, 'tags', None) or {}
+                if hasattr(tags, 'get'):
+                    a = tags.get('albumartist') or tags.get('artist')
+                    al = tags.get('album')
+                    def pick(v):
+                        if isinstance(v, list) and v:
+                            return str(v[0]).strip()
+                        if isinstance(v, str):
+                            return v.strip()
+                        return ''
+                    a = pick(a)
+                    al = pick(al)
+                    if a:
+                        artists.append(a)
+                    if al:
+                        albums.append(al)
+            except Exception:
+                continue
+        def most_common(lst):
+            if not lst:
+                return ''
+            from collections import Counter
+            return Counter(lst).most_common(1)[0][0]
+        if not self.album_artist.text().strip() and artists:
+            self.album_artist.setText(most_common(artists))
+        if not self.album_title.text().strip() and albums:
+            self.album_title.setText(most_common(albums))
+
+    def _on_accept(self):
+        mode = self.mode.currentText()
+        if not self.files:
+            QMessageBox.warning(self, "No files", "Please select one or more audio files.")
+            return
+        if mode == 'Album':
+            # Try auto-fill once more if empty
+            if not self.album_artist.text().strip() or not self.album_title.text().strip():
+                self._autofill_album_fields()
+            # If still missing, prompt using first file as context
+            if not self.album_artist.text().strip() or not self.album_title.text().strip():
+                for p in self.files:
+                    base = os.path.basename(p)
+                    if not self.album_artist.text().strip():
+                        txt, ok = QInputDialog.getText(self, "Missing Artist", f"Enter Artist for {base}:")
+                        if ok and txt.strip():
+                            self.album_artist.setText(txt.strip())
+                    if not self.album_title.text().strip():
+                        txt, ok = QInputDialog.getText(self, "Missing Album", f"Enter Album for {base}:")
+                        if ok and txt.strip():
+                            self.album_title.setText(txt.strip())
+                    if self.album_artist.text().strip() and self.album_title.text().strip():
+                        break
+            if not self.album_artist.text().strip() or not self.album_title.text().strip():
+                QMessageBox.warning(self, "Missing info", "Please provide Artist and Album names.")
+                return
+        if mode == 'Playlist':
+            if not self.playlist_name.text().strip():
+                QMessageBox.warning(self, "Missing name", "Please provide a playlist name.")
+                return
+        self.accept()
+
+    def get_values(self):
+        mode = self.mode.currentText()
+        return {
+            'mode': mode,
+            'files': list(self.files),
+            'artist': self.album_artist.text().strip(),
+            'album': self.album_title.text().strip(),
+            'playlist': self.playlist_name.text().strip(),
+            'subfolder': self.playlist_sub.text().strip(),
+        }

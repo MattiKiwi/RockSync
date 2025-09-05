@@ -23,7 +23,7 @@ class TracksPane(QWidget):
         top.addWidget(QLabel("Device:"))
         self.device_combo = QComboBox(); top.addWidget(self.device_combo)
         rb = QPushButton("Refresh"); rb.clicked.connect(self._refresh_devices); top.addWidget(rb)
-        b3 = QPushButton("Scan"); b3.clicked.connect(self.scan); top.addWidget(b3)
+        b3 = QPushButton("Scan"); b3.setProperty("accent", True); b3.clicked.connect(self.scan); top.addWidget(b3)
         root.addLayout(top)
 
         self.cols = ("artist", "album", "title", "track", "format", "lyrics", "cover", "duration", "path")
@@ -87,6 +87,7 @@ class TracksPane(QWidget):
         self.flush_timer.start()
 
     def _drain_queue(self):
+        folder = self._selected_music()
         try:
             while True:
                 kind, payload = self._queue.get_nowait()

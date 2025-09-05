@@ -40,7 +40,7 @@ class AppWindow(QMainWindow):
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QHBoxLayout(central)
+        root_v = QVBoxLayout(central)
 
         # Preload tasks for quick actions and consistency
         try:
@@ -48,18 +48,43 @@ class AppWindow(QMainWindow):
         except Exception:
             self.tasks = []
 
-        # Sidebar navigation (Spotify/iTunes-like)
+        # Top app bar (Material-ish)
+        top_bar = QWidget()
+        top_bar.setObjectName("TopAppBar")
+        top_h = QHBoxLayout(top_bar)
+        title = QLabel("RockSync")
+        title.setObjectName("TopAppTitle")
+        top_h.addWidget(title)
+        top_h.addStretch(1)
+        # Quick theme switcher
+        theme_options = ['system'] + list_theme_files()
+        if 'theme_file' not in self.settings and 'theme' in self.settings:
+            self.settings['theme_file'] = self.settings['theme']
+        self.quick_theme_box = QComboBox()
+        self.quick_theme_box.addItems(theme_options)
+        self.quick_theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
+        self.quick_theme_box.currentTextChanged.connect(lambda t: (apply_theme(QApplication.instance(), t)))
+        top_h.addWidget(QLabel("Theme:"))
+        top_h.addWidget(self.quick_theme_box)
+        root_v.addWidget(top_bar)
+
+        # Content row with Navigation rail + pages
+        content_row = QHBoxLayout()
+        root_v.addLayout(content_row, 1)
+
+        # Sidebar navigation (Navigation rail)
         self.nav = QListWidget()
+        self.nav.setObjectName("NavList")
         self.nav.setAlternatingRowColors(False)
-        self.nav.setMaximumWidth(220)
-        self.nav.setMinimumWidth(180)
+        self.nav.setMaximumWidth(240)
+        self.nav.setMinimumWidth(200)
         self.nav.setSpacing(2)
         self.nav.setUniformItemSizes(True)
-        layout.addWidget(self.nav)
+        content_row.addWidget(self.nav)
 
         # Stacked pages
         self.stack = QStackedWidget()
-        layout.addWidget(self.stack, 1)
+        content_row.addWidget(self.stack, 1)
 
         # Pages: build in preferred user flow order
         # Library (Explorer)
@@ -115,14 +140,14 @@ class AppWindow(QMainWindow):
             self.nav.addItem(it)
 
         add_header("Library")
-        add_page("Library", 0)
-        add_page("Device", 1)
-        add_page("Tracks", 2)
-        add_page("Sync", 3)
-        add_page("Rockbox", 4)
-        add_page("Settings", 5)
+        add_page("📚  Library", 0)
+        add_page("💿  Device", 1)
+        add_page("🎵  Tracks", 2)
+        add_page("🔄  Sync", 3)
+        add_page("🎛️  Rockbox", 4)
+        add_page("⚙️  Settings", 5)
         add_header("Advanced")
-        add_page("Tasks (Advanced)", 6)
+        add_page("🧪  Tasks (Advanced)", 6)
 
         def on_nav_changed():
             it = self.nav.currentItem()
@@ -222,7 +247,7 @@ class AppWindow(QMainWindow):
         self.advanced_group.setVisible(False)
         v.addWidget(self.advanced_group)
 
-        # Theme selector
+        # Theme selector (also mirrored in top bar)
         theme_options = ['system'] + list_theme_files()
         if 'theme_file' not in self.settings and 'theme' in self.settings:
             self.settings['theme_file'] = self.settings['theme']
@@ -252,6 +277,10 @@ class AppWindow(QMainWindow):
             self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
             QMessageBox.information(self, "Settings", "Settings saved.")
             self._reconfigure_logging()
+            try:
+                self.quick_theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
+            except Exception:
+                pass
             apply_theme(QApplication.instance(), self.settings.get('theme_file', 'system'))
         else:
             QMessageBox.critical(self, "Settings", "Could not save settings. See logs.")
@@ -271,6 +300,10 @@ class AppWindow(QMainWindow):
         self.set_dummy_device.setText(self.settings.get('dummy_device_path', ''))
         self.dummy_enable_cb.setChecked(bool(self.settings.get('dummy_device_enabled', False)))
         self.theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
+        try:
+            self.quick_theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
+        except Exception:
+            pass
         self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
         self._reconfigure_logging()
         apply_theme(QApplication.instance(), self.settings.get('theme_file', 'system'))
@@ -316,7 +349,7 @@ class AppWindow(QMainWindow):
 
         actions_row = QHBoxLayout()
         actions_row.addStretch(1)
-        self.run_btn = QPushButton("Run"); self.run_btn.clicked.connect(self.run_task); actions_row.addWidget(self.run_btn)
+        self.run_btn = QPushButton("Run"); self.run_btn.setProperty("accent", True); self.run_btn.clicked.connect(self.run_task); actions_row.addWidget(self.run_btn)
         self.stop_btn = QPushButton("Stop"); self.stop_btn.clicked.connect(self.stop_task); actions_row.addWidget(self.stop_btn)
         right.addLayout(actions_row)
 
