@@ -101,13 +101,34 @@ class ExplorerPane(QWidget):
             return
         try:
             if params['mode'] == 'Album':
-                artist = params.get('artist', '').strip()
-                album = params.get('album', '').strip()
-                dest = os.path.join(music_root, 'Albums', artist, album)
-                os.makedirs(dest, exist_ok=True)
-                copied = self._copy_files(files, dest)
-                QMessageBox.information(self, "Import Complete", f"Imported {len(copied)} files to\n{dest}")
-                self.navigate(dest)
+                # Import each file into its own Artist/Album based on its tags
+                fallback_artist = params.get('artist', '').strip()
+                fallback_album = params.get('album', '').strip()
+                dests = set()
+                total = 0
+                for src in files:
+                    a, al = self._extract_artist_album(src)
+                    artist = a or fallback_artist or 'Unknown Artist'
+                    album = al or fallback_album or 'Unknown Album'
+                    artist = self._safe_part(artist)
+                    album = self._safe_part(album)
+                    dest = os.path.join(music_root, 'Albums', artist, album)
+                    os.makedirs(dest, exist_ok=True)
+                    copied = self._copy_files([src], dest)
+                    total += len(copied)
+                    if copied:
+                        dests.add(dest)
+                # Finalize
+                if total == 0:
+                    QMessageBox.warning(self, "Import", "No files were imported.")
+                else:
+                    if len(dests) == 1:
+                        dest = list(dests)[0]
+                        QMessageBox.information(self, "Import Complete", f"Imported {total} files to\n{dest}")
+                        self.navigate(dest)
+                    else:
+                        QMessageBox.information(self, "Import Complete", f"Imported {total} files across {len(dests)} album folders under\n{os.path.join(music_root, 'Albums')}")
+                        self.navigate(os.path.join(music_root, 'Albums'))
             elif params['mode'] == 'Playlist':
                 name = params.get('playlist', '').strip()
                 sub = params.get('subfolder', '').strip()
@@ -126,6 +147,35 @@ class ExplorerPane(QWidget):
                 self.navigate(dest)
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import: {e}")
+
+    def _extract_artist_album(self, file_path):
+        """Return (artist, album) from tags; tries albumartist then artist."""
+        try:
+            from mutagen import File as MFile
+            easy = MFile(file_path, easy=True)
+            tags = getattr(easy, 'tags', None) or {}
+            if hasattr(tags, 'get'):
+                def pick(v):
+                    if isinstance(v, list) and v:
+                        return str(v[0]).strip()
+                    if isinstance(v, str):
+                        return v.strip()
+                    return ''
+                artist = pick(tags.get('albumartist')) or pick(tags.get('artist'))
+                album = pick(tags.get('album'))
+                return artist, album
+        except Exception:
+            pass
+        return '', ''
+
+    @staticmethod
+    def _safe_part(name: str) -> str:
+        # Sanitize path components to avoid separator issues
+        bad = ['/', '\\', ':']
+        s = name.strip() or 'Unknown'
+        for b in bad:
+            s = s.replace(b, '_')
+        return s
 
     def _copy_files(self, files, dest_dir):
         import shutil
@@ -554,12 +604,13 @@ class ImportDialog(QDialog):
         form = QFormLayout()
         v.addLayout(form)
 
-        # Files selector
+        # Files/folder selector
         files_row = QWidget(); h = QHBoxLayout(files_row); h.setContentsMargins(0,0,0,0)
         self.files_edit = QLineEdit(); self.files_edit.setReadOnly(True)
-        b = QPushButton("Select Files…"); b.clicked.connect(self._pick_files)
-        h.addWidget(self.files_edit, 1); h.addWidget(b)
-        form.addRow("Files", files_row)
+        b_files = QPushButton("Select Files…"); b_files.clicked.connect(self._pick_files)
+        b_folder = QPushButton("Select Folder…"); b_folder.clicked.connect(self._pick_folder)
+        h.addWidget(self.files_edit, 1); h.addWidget(b_files); h.addWidget(b_folder)
+        form.addRow("Files/Folder", files_row)
 
         # Mode
         self.mode = QComboBox(); self.mode.addItems(["Album", "Playlist", "Track"])
@@ -593,6 +644,28 @@ class ImportDialog(QDialog):
             # Try to auto-fill album/artist when importing as Album
             if self.mode.currentText() == 'Album':
                 self._autofill_album_fields()
+
+    def _pick_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select folder with music", os.getcwd())
+        if not folder:
+            return
+        files = self._collect_audio_files(folder)
+        self.files = files
+        self.files_edit.setText(f"{len(files)} file(s) from folder")
+        if self.mode.currentText() == 'Album':
+            self._autofill_album_fields()
+
+    def _collect_audio_files(self, root_dir):
+        exts = {'.flac','.mp3','.m4a','.alac','.aac','.ogg','.opus','.wav'}
+        out = []
+        for base, _dirs, fnames in os.walk(root_dir):
+            for fn in fnames:
+                try:
+                    if os.path.splitext(fn)[1].lower() in exts:
+                        out.append(os.path.join(base, fn))
+                except Exception:
+                    continue
+        return out
 
     def _update_visibility(self):
         mode = self.mode.currentText()

@@ -69,6 +69,7 @@ def main():
     parser.add_argument("--lyrics-subdir", default=DEFAULT_LYRICS_SUBDIR, help="Subdirectory name to store lyrics files")
     parser.add_argument("--ext", default=DEFAULT_LYRICS_EXT, help="Lyrics file extension, e.g. .lrc or .txt")
     parser.add_argument("--genius-token", default=DEFAULT_GENIUS_TOKEN, help="Genius API token (optional)")
+    parser.add_argument("--files-from", help="Process only FLAC files from this list (one path per line)")
     args = parser.parse_args()
 
     global genius, LYRICS_SUBDIR, LYRICS_EXT
@@ -87,13 +88,25 @@ def main():
             print("⚠ lyricsgenius not installed; skipping online fetch.")
         print("⚠ No Genius token; only embedded lyrics used.")
 
-    for root, _, files in os.walk(args.music_dir):
-        for f in files:
-            if f.lower().endswith(".flac"):
-                try:
-                    process_file(os.path.join(root, f))
-                except Exception as e:
-                    LOG.append(f"Error processing {f}: {e}")
+    if args.files_from:
+        try:
+            with open(args.files_from, 'r', encoding='utf-8') as fh:
+                files = [line.strip() for line in fh if line.strip().lower().endswith('.flac')]
+        except Exception:
+            files = []
+        for full in files:
+            try:
+                process_file(full)
+            except Exception as e:
+                LOG.append(f"Error processing {full}: {e}")
+    else:
+        for root, _, files in os.walk(args.music_dir):
+            for f in files:
+                if f.lower().endswith(".flac"):
+                    try:
+                        process_file(os.path.join(root, f))
+                    except Exception as e:
+                        LOG.append(f"Error processing {f}: {e}")
 
     print("\n=== Process Complete ===")
     for line in LOG:

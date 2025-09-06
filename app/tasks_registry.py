@@ -22,14 +22,16 @@ def get_tasks():
             "args": [
                 {"key": "--library", "label": "Library Root", "type": "path", "default": str(ROOT)},
                 {"key": "--dry-run", "label": "Dry run (no write)", "type": "bool", "default": True},
+                {"key": "--only-missing", "label": "Only fill missing genres", "type": "bool", "default": True},
                 {"key": "--overwrite", "label": "Overwrite existing genres", "type": "bool", "default": False},
                 {"key": "--use-acoustid", "label": "Use AcoustID (fpcalc required)", "type": "bool", "default": False},
-                {"key": "--use-tag-search", "label": "Use MusicBrainz tag search", "type": "bool", "default": True},
+                {"key": "--use-tag-search", "label": "Use MusicBrainz tag search", "type": "bool", "default": False},
                 {"key": "--folder-fallback", "label": "Fallback to folder name", "type": "bool", "default": False},
                 {"key": "--max-genres", "label": "Max genres to write", "type": "int", "default": 5},
             ],
-            "py_deps": ["mutagen", "acoustid", "musicbrainzngs"],
-            "bin_deps": ["fpcalc"],
+            # 'acoustid' and 'fpcalc' are optional; only needed if --use-acoustid is enabled
+            "py_deps": ["mutagen", "musicbrainzngs"],
+            "bin_deps": [],
         },
         {
             "id": "sort_by_artist",

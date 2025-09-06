@@ -45,14 +45,15 @@ def probe_audio_info(file_path):
 
 
 def needs_downsample(file_path):
-    """True if the file appears not to be 16-bit / 44.1kHz.
-    If probing fails, return True to be safe (ensures consistent target).
+    """True if the file appears ABOVE 16-bit / 44.1kHz.
+    If probing fails, return False to avoid degrading lower-quality sources.
     """
     sr, bps, fmt = probe_audio_info(file_path)
-    # If we can't determine, proceed with downsampling to ensure target
+    # If we can't determine, do not touch the file
     if sr is None and bps is None and fmt is None:
-        return True
-    if sr is not None and sr != 44100:
+        return False
+    # Only downsample if sample rate is ABOVE target
+    if sr is not None and sr > 44100:
         return True
     # Prefer bits_per_sample when available
     if bps is not None:
@@ -100,9 +101,17 @@ def main():
     parser = argparse.ArgumentParser(description="Downsample FLAC files to 16-bit 44.1kHz in place")
     parser.add_argument("--source", default=DEFAULT_SOURCE_DIR, help="Root folder to process")
     parser.add_argument("-j", "--jobs", type=int, default=cpu_count(), help="Number of parallel processes")
+    parser.add_argument("--files-from", help="Process only files listed in this text file (one path per line)")
     args = parser.parse_args()
 
-    all_flacs = find_flac_files(args.source)
+    if args.files_from:
+        try:
+            with open(args.files_from, 'r', encoding='utf-8') as fh:
+                all_flacs = [line.strip() for line in fh if line.strip().lower().endswith('.flac')]
+        except Exception:
+            all_flacs = []
+    else:
+        all_flacs = find_flac_files(args.source)
     print(f"🔍 Found {len(all_flacs)} FLAC files. Starting conversion with {args.jobs} processes...")
 
     with Pool(args.jobs) as pool:

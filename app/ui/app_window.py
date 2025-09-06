@@ -596,7 +596,14 @@ class AppWindow(QMainWindow):
     def build_cmd(self, task):
         py = shlex.quote(sys.executable)
         script = shlex.quote(str(task["script"]))
-        parts = [py, script]
+        # Use unbuffered Python so progress prints stream into the UI
+        parts = [py, '-u', script]
+        # Handle mutually exclusive flags for tag_genres
+        flags = {s.get('key'): s for s in task.get('args', [])}
+        overwrite_checked = False
+        if '--overwrite' in flags and isinstance(self.form_widgets.get('--overwrite'), QCheckBox):
+            overwrite_checked = bool(self.form_widgets['--overwrite'].isChecked())
+
         for spec in task.get('args', []):
             key = spec.get('key')
             typ = spec.get('type')
@@ -604,6 +611,9 @@ class AppWindow(QMainWindow):
             val = ''
             if typ == 'bool':
                 val = w.isChecked()
+                # Avoid passing both --only-missing and --overwrite together
+                if key == '--only-missing' and overwrite_checked:
+                    continue
                 if val:
                     parts.append(key)
                 continue
@@ -791,12 +801,19 @@ class AppWindow(QMainWindow):
     def _build_cmd_with_values(self, task, values):
         py = shlex.quote(sys.executable)
         script = shlex.quote(str(task["script"]))
-        parts = [py, script]
+        # Use unbuffered Python so progress prints stream into the UI
+        parts = [py, '-u', script]
+        # Handle mutually exclusive flags for tag_genres
+        overwrite_checked = bool(values.get('--overwrite', False))
+
         for spec in task.get('args', []):
             key = spec.get('key')
             typ = spec.get('type')
             val = values.get(key, '')
             if typ == 'bool':
+                # Avoid passing both --only-missing and --overwrite together
+                if key == '--only-missing' and overwrite_checked:
+                    continue
                 if val:
                     parts.append(key)
                 continue

@@ -4,6 +4,7 @@ import subprocess
 import shutil
 import threading
 import queue
+import sqlite3
 from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QTextCursor
@@ -81,7 +82,7 @@ class SyncPane(QWidget):
         # Mode selector
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("Mode:"))
-        self.mode_combo = QComboBox(); self.mode_combo.addItems(["Full Sync", "Partial Sync (Selected)"])
+        self.mode_combo = QComboBox(); self.mode_combo.addItems(["Full Sync", "Partial Sync (Selected)", "Add Missing (DB)"])
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_row.addWidget(self.mode_combo)
         mode_row.addStretch(1)
@@ -229,6 +230,7 @@ class SyncPane(QWidget):
                 inc_exts = {e.lower() for e in self.ext_edit.text().split() if e.startswith('.')}
                 srcp = Path(src); dstp = Path(dst)
                 copied = 0; skipped = 0; updated = 0
+                touched: list[Path] = []  # files newly copied/updated on device
                 # Determine selection roots for partial mode
                 selected_roots: list[Path] = []
                 if self.mode_combo.currentIndex() == 1:
@@ -244,59 +246,101 @@ class SyncPane(QWidget):
                     for p in tmp:
                         if not any(str(p).startswith(str(other) + os.sep) for other in selected_roots):
                             selected_roots.append(p)
+                mode_idx = self.mode_combo.currentIndex()
 
-                # Build source map according to selection
-                self._queue.put(("status", "Sync: scanning source..."))
-                src_files: list[tuple[Path, Path]] = []
-                def add_from_root(root_dir: Path):
-                    for rootd, _, files in os.walk(root_dir):
+                if mode_idx in (0, 1):
+                    # Build source map according to selection
+                    self._queue.put(("status", "Sync: scanning source..."))
+                    src_files: list[tuple[Path, Path]] = []
+                    def add_from_root(root_dir: Path):
+                        for rootd, _, files in os.walk(root_dir):
+                            if self._stop_flag:
+                                break
+                            for name in files:
+                                ext = os.path.splitext(name)[1].lower()
+                                if inc_exts and ext not in inc_exts:
+                                    continue
+                                full = Path(rootd) / name
+                                try:
+                                    rel = full.relative_to(srcp)
+                                except ValueError:
+                                    continue
+                                src_files.append((full, rel))
+
+                    if selected_roots:
+                        for r in selected_roots:
+                            add_from_root(r)
+                    else:
+                        add_from_root(srcp)
+                    # Copy only missing
+                    if not self._stop_flag:
+                        self._queue.put(("status", "Sync: copying files..."))
+                    for full, rel in src_files:
                         if self._stop_flag:
                             break
-                        for name in files:
-                            ext = os.path.splitext(name)[1].lower()
-                            if inc_exts and ext not in inc_exts:
-                                continue
-                            full = Path(rootd) / name
-                            try:
-                                rel = full.relative_to(srcp)
-                            except ValueError:
-                                continue
-                            src_files.append((full, rel))
-
-                if selected_roots:
-                    for r in selected_roots:
-                        add_from_root(r)
-                else:
-                    add_from_root(srcp)
-                # Copy/update
-                if not self._stop_flag:
-                    self._queue.put(("status", "Sync: copying files..."))
-                for full, rel in src_files:
-                    if self._stop_flag:
-                        break
-                    dst_file = dstp / rel
-                    dst_file.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        if not dst_file.exists():
-                            shutil.copy2(full, dst_file)
-                            copied += 1
-                            self._queue.put(("log", f"+ {rel}\n"))
-                        else:
-                            if self.skip_existing_cb.isChecked():
-                                skipped += 1
+                        dst_file = dstp / rel
+                        dst_file.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            if not dst_file.exists():
+                                shutil.copy2(full, dst_file)
+                                copied += 1
+                                touched.append(dst_file)
+                                self._queue.put(("log", f"+ {rel}\n"))
                             else:
-                                sst = full.stat(); dstst = dst_file.stat()
-                                if sst.st_size != dstst.st_size or int(sst.st_mtime) > int(dstst.st_mtime):
-                                    shutil.copy2(full, dst_file)
-                                    updated += 1
-                                    self._queue.put(("log", f"~ {rel}\n"))
-                                else:
-                                    skipped += 1
-                    except Exception as e:
-                        self._queue.put(("log", f"! {rel} : {e}\n"))
+                                skipped += 1
+                        except Exception as e:
+                            self._queue.put(("log", f"! {rel} : {e}\n"))
+                else:
+                    # Mode 2: Add Missing (DB)
+                    self._queue.put(("status", "Sync: loading DBs..."))
+                    lib_db = self._resolve_db_path('library', None)
+                    dev_db = self._resolve_db_path('device', dstp.parent)
+                    if not lib_db or not os.path.exists(lib_db):
+                        self._queue.put(("log", "! Library DB not found. Ensure music_index.sqlite3 exists.\n"))
+                        return
+                    if not dev_db or not os.path.exists(dev_db):
+                        self._queue.put(("log", "! Device DB not found. Ensure the device has been indexed.\n"))
+                        return
+                    lib_rows = self._load_db_rows(lib_db)
+                    dev_keys = self._load_db_keys(dev_db)
+                    if self._stop_flag:
+                        return
+                    self._queue.put(("status", "Sync: comparing libraries..."))
+                    # Build relative path for copy based on source base
+                    for (path, artist, album, title, seconds) in lib_rows:
+                        if self._stop_flag:
+                            break
+                        k = self._make_key(artist, album, title, seconds)
+                        if k in dev_keys:
+                            continue
+                        try:
+                            full = Path(path)
+                        except Exception:
+                            continue
+                        # Only copy if under source base and extension allowed
+                        ext = full.suffix.lower()
+                        if inc_exts and ext not in inc_exts:
+                            continue
+                        try:
+                            rel = full.relative_to(srcp)
+                        except Exception:
+                            # Not under source base; place under Tracks
+                            rel = Path('Tracks') / full.name
+                        dst_file = dstp / rel
+                        dst_file.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            if not dst_file.exists():
+                                shutil.copy2(str(full), str(dst_file))
+                                copied += 1
+                                touched.append(dst_file)
+                                self._queue.put(("log", f"+ {rel}\n"))
+                            else:
+                                skipped += 1
+                        except Exception as e:
+                            self._queue.put(("log", f"! {rel} : {e}\n"))
 
-                # Delete extras if requested
-                if self.delete_extras_cb.isChecked() and not self._stop_flag:
+                # Delete extras if requested (only applicable to Full/Partial modes)
+                if self.delete_extras_cb.isChecked() and not self._stop_flag and mode_idx in (0, 1):
                     self._queue.put(("status", "Sync: deleting extras..."))
                     src_set = {rel.as_posix() for _, rel in src_files}
                     # Scope deletions: if partial, only under selected roots; otherwise whole dst
@@ -340,9 +384,24 @@ class SyncPane(QWidget):
                         jobs = int(self.controller.settings.get('jobs', os.cpu_count() or 4))
                     except Exception:
                         jobs = os.cpu_count() or 4
+                    # Build list of touched FLAC files for targeted processing
+                    touched_flacs = [str(p) for p in touched if p.suffix.lower() == '.flac']
+                    list_file = None
+                    if touched_flacs:
+                        try:
+                            list_file = dstp / ".sync_touched_flac.txt"
+                            with open(list_file, 'w', encoding='utf-8') as fh:
+                                fh.write("\n".join(touched_flacs))
+                        except Exception:
+                            list_file = None
                     try:
+                        cmd = [sys.executable, script, "-j", str(jobs)]
+                        if list_file:
+                            cmd.extend(["--files-from", str(list_file)])
+                        else:
+                            cmd.extend(["--source", str(dstp)])
                         proc = subprocess.Popen(
-                            [sys.executable, script, "--source", str(dstp), "-j", str(jobs)],
+                            cmd,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                         )
                         assert proc.stdout is not None
@@ -359,6 +418,12 @@ class SyncPane(QWidget):
                             self._queue.put(("log", f"Downsampler exited with code {rc}.\n"))
                         else:
                             self._queue.put(("log", "Downsampling complete.\n"))
+                        # Cleanup temp list file
+                        try:
+                            if list_file and os.path.exists(list_file):
+                                os.remove(list_file)
+                        except Exception:
+                            pass
                     except FileNotFoundError:
                         self._queue.put(("log", "Downsampler script not found. Skipping.\n"))
                     except Exception as e:
@@ -398,16 +463,41 @@ class SyncPane(QWidget):
                             self._queue.put(("log", f"{label} error: {e}\n"))
 
                     dstp = Path(dst)
-                    # 1) Resize existing front covers to 100x100
-                    _run_script([sys.executable, str(SCRIPTS_DIR / 'embedd_resize.py'), '--folder', str(dstp), '--size', '100x100'], 'Cover resize')
+                    # Write touched file list for targeted cleanup
+                    touched_list = None
+                    if touched:
+                        try:
+                            touched_list = dstp / ".sync_touched.txt"
+                            with open(touched_list, 'w', encoding='utf-8') as fh:
+                                for p in touched:
+                                    fh.write(str(p) + "\n")
+                        except Exception:
+                            touched_list = None
+                    # 1) Resize existing front covers to 100x100 (only new files)
+                    cmd1 = [sys.executable, str(SCRIPTS_DIR / 'embedd_resize.py'), '--folder', str(dstp), '--size', '100x100']
+                    if touched_list:
+                        cmd1.extend(['--files-from', str(touched_list)])
+                    _run_script(cmd1, 'Cover resize')
                     if self._stop_flag:
                         pass
                     else:
-                        # 2) Export lyrics to sidecar files
-                        _run_script([sys.executable, str(SCRIPTS_DIR / 'lyrics_local.py'), '--music-dir', str(dstp), '--lyrics-subdir', 'Lyrics', '--ext', '.lrc'], 'Lyrics export')
+                        # 2) Export lyrics to sidecar files (only new files)
+                        cmd2 = [sys.executable, str(SCRIPTS_DIR / 'lyrics_local.py'), '--music-dir', str(dstp), '--lyrics-subdir', 'Lyrics', '--ext', '.lrc']
+                        if touched_list:
+                            cmd2.extend(['--files-from', str(touched_list)])
+                        _run_script(cmd2, 'Lyrics export')
                     if not self._stop_flag:
-                        # 3) Promote/resize image to cover where no type 3 exists
-                        _run_script([sys.executable, str(SCRIPTS_DIR / 'embed_resize_no_cover.py'), '--folder', str(dstp), '--max-size', '100'], 'Promote cover')
+                        # 3) Promote/resize image to cover where no type 3 exists (only new files)
+                        cmd3 = [sys.executable, str(SCRIPTS_DIR / 'embed_resize_no_cover.py'), '--folder', str(dstp), '--max-size', '100']
+                        if touched_list:
+                            cmd3.extend(['--files-from', str(touched_list)])
+                        _run_script(cmd3, 'Promote cover')
+                    # Cleanup temp list
+                    try:
+                        if touched_list and os.path.exists(touched_list):
+                            os.remove(touched_list)
+                    except Exception:
+                        pass
 
                 self._queue.put(("log", f"Done. copied={copied}, updated={updated}, skipped={skipped}\n"))
             finally:
@@ -415,6 +505,43 @@ class SyncPane(QWidget):
 
         self._worker = threading.Thread(target=worker, daemon=True)
         self._worker.start()
+
+    # ---- DB helpers for Add Missing mode ----
+    def _resolve_db_path(self, which: str, device_mount: Path | None) -> str | None:
+        try:
+            from core import CONFIG_PATH
+            cfg = Path(CONFIG_PATH)
+            if which == 'library':
+                return str(cfg.with_name('music_index.sqlite3'))
+            if which == 'device' and device_mount:
+                return str(Path(device_mount) / '.rocksync' / 'music_index.sqlite3')
+        except Exception:
+            return None
+        return None
+
+    def _load_db_rows(self, db_path: str):
+        rows = []
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.execute("SELECT path, artist, album, title, IFNULL(duration_seconds,0) FROM tracks")
+                rows = [(p, a or '', al or '', t or '', int(d or 0)) for (p,a,al,t,d) in cur.fetchall()]
+        except Exception:
+            rows = []
+        return rows
+
+    def _make_key(self, artist: str, album: str, title: str, seconds: int) -> tuple:
+        return (artist.strip().lower(), album.strip().lower(), title.strip().lower(), int(seconds or 0))
+
+    def _load_db_keys(self, db_path: str):
+        keys = set()
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.execute("SELECT artist, album, title, IFNULL(duration_seconds,0) FROM tracks")
+                for a, al, t, d in cur.fetchall():
+                    keys.add(self._make_key(a or '', al or '', t or '', int(d or 0)))
+        except Exception:
+            return set()
+        return keys
 
     def stop_sync(self):
         self._stop_flag = True

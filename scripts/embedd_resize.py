@@ -50,6 +50,7 @@ def main():
     parser = argparse.ArgumentParser(description="Resize and re-embed front cover images in FLAC files")
     parser.add_argument("--folder", default=DEFAULT_FOLDER_PATH, help="Folder to process recursively")
     parser.add_argument("--size", default=f"{DEFAULT_TARGET_SIZE[0]}x{DEFAULT_TARGET_SIZE[1]}", help="Target size WIDTHxHEIGHT")
+    parser.add_argument("--files-from", help="Restrict processing to files listed in this file (one path per line)")
     args = parser.parse_args()
 
     try:
@@ -57,11 +58,20 @@ def main():
     except Exception:
         raise SystemExit("--size must be WIDTHxHEIGHT, e.g. 100x100")
 
-    for root, _, files in os.walk(args.folder):
-        for file in files:
-            if file.lower().endswith(".flac"):
-                full_path = os.path.join(root, file)
-                resize_and_embed_flac_cover(full_path, (width, height))
+    if args.files_from:
+        try:
+            with open(args.files_from, 'r', encoding='utf-8') as fh:
+                files = [line.strip() for line in fh if line.strip().lower().endswith('.flac')]
+        except Exception:
+            files = []
+        for full_path in files:
+            resize_and_embed_flac_cover(full_path, (width, height))
+    else:
+        for root, _, files in os.walk(args.folder):
+            for file in files:
+                if file.lower().endswith(".flac"):
+                    full_path = os.path.join(root, file)
+                    resize_and_embed_flac_cover(full_path, (width, height))
 
 if __name__ == "__main__":
     main()

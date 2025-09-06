@@ -55,7 +55,12 @@ from mutagen.oggvorbis import OggVorbis
 from mutagen.oggopus import OggOpus
 from mutagen.easymp4 import EasyMP4
 
-import acoustid
+try:
+    import acoustid  # optional
+    _ACOUSTID_AVAILABLE = True
+except Exception:
+    acoustid = None  # type: ignore
+    _ACOUSTID_AVAILABLE = False
 import musicbrainzngs
 import sys
 
@@ -189,7 +194,7 @@ def lookup_genres_with_acoustid(file_path: Path, api_key: str,
     # acoustid.match returns list of (score, recording_id(s))
     rate_limit_sleep(rl_ts)
     try:
-        results = acoustid.match(api_key, str(file_path))
+        results = acoustid.match(api_key, str(file_path))  # type: ignore[attr-defined]
     except acoustid.FingerprintGenerationError:
         return []
     except Exception:
@@ -578,20 +583,24 @@ def process_file(p: Path, args, cache: Dict[str, Any], mb_client, rl_ts: List[fl
 
     # Lookup via AcoustID if no cache hit
     if not genres and args.use_acoustid:
-        api_key = os.environ.get("ACOUSTID_API_KEY", "").strip()
-        if not api_key:
+        if not _ACOUSTID_AVAILABLE:
             if args.verbose:
-                print(f"[acoustid] Skipping {p.name}: ACOUSTID_API_KEY not set")
+                print(f"[acoustid] Skipping {p.name}: 'acoustid' module not installed")
         else:
-            try:
-                genres = lookup_genres_with_acoustid(p, api_key, musicbrainzngs, rl_ts, args.max_genres)
-                if genres:
-                    cache[cache_key_by_fp(str(p))] = genres
-                elif args.verbose:
-                    print(f"[acoustid] No genre match for {p.name}")
-            except Exception as e:
+            api_key = os.environ.get("ACOUSTID_API_KEY", "").strip()
+            if not api_key:
                 if args.verbose:
-                    print(f"[acoustid] Error for {p.name}: {e}")
+                    print(f"[acoustid] Skipping {p.name}: ACOUSTID_API_KEY not set")
+            else:
+                try:
+                    genres = lookup_genres_with_acoustid(p, api_key, musicbrainzngs, rl_ts, args.max_genres)
+                    if genres:
+                        cache[cache_key_by_fp(str(p))] = genres
+                    elif args.verbose:
+                        print(f"[acoustid] No genre match for {p.name}")
+                except Exception as e:
+                    if args.verbose:
+                        print(f"[acoustid] Error for {p.name}: {e}")
 
     # Lookup via tag search if still unknown
     if not genres and args.use_tag_search:

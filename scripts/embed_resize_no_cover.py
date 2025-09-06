@@ -63,13 +63,23 @@ def main():
     parser = argparse.ArgumentParser(description="Promote first non-cover image to front cover and resize")
     parser.add_argument("--folder", default=DEFAULT_FOLDER_PATH, help="Folder to process recursively")
     parser.add_argument("--max-size", type=int, default=DEFAULT_MAX_SIZE, help="Max size (pixels) for width/height")
+    parser.add_argument("--files-from", help="Restrict processing to files listed in this file (one path per line)")
     args = parser.parse_args()
 
-    for root, _, files in os.walk(args.folder):
-        for file in files:
-            if file.lower().endswith(".flac"):
-                full_path = os.path.join(root, file)
-                resize_and_promote_cover(full_path, args.max_size)
+    if args.files_from:
+        try:
+            with open(args.files_from, 'r', encoding='utf-8') as fh:
+                files = [line.strip() for line in fh if line.strip().lower().endswith('.flac')]
+        except Exception:
+            files = []
+        for full_path in files:
+            resize_and_promote_cover(full_path, args.max_size)
+    else:
+        for root, _, files in os.walk(args.folder):
+            for file in files:
+                if file.lower().endswith(".flac"):
+                    full_path = os.path.join(root, file)
+                    resize_and_promote_cover(full_path, args.max_size)
 
 if __name__ == "__main__":
     main()
