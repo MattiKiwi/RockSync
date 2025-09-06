@@ -8,6 +8,7 @@ An optional alternative to iTunes for Rockbox-based MP3 players. Browse your lib
   - `pip install PySide6 mutagen Pillow requests beautifulsoup4 psutil acoustid musicbrainzngs lyricsgenius tqdm`
   - Install `ffmpeg` (and `ffprobe`) via your OS package manager if you’ll convert/downsample.
   - For AcoustID: install Chromaprint’s `fpcalc` binary (system package) if you plan to run genre tagging.
+  - Optional (TIDAL downloads): `pip install tidal-dl-ng`
 - Run the app from the repo root:
 
 ```
@@ -55,12 +56,27 @@ Settings live in `app/settings.json`. Logs are written to `app/latest.log` and `
 - Themes browser/installer: `requests`, `beautifulsoup4`, `tqdm` (optional for CLI progress)
 - Lyrics (optional online): `lyricsgenius`
 - Genre tagging (optional): `acoustid` (aka pyacoustid), `musicbrainzngs`
+- TIDAL integration (optional): `tidal-dl-ng`
 
 System tools required by some features/scripts:
 - `ffmpeg` and `ffprobe` on PATH (conversions, downsampling)
 - `fpcalc` (Chromaprint) for AcoustID lookups used by `tag_genres.py`
 
 The app degrades gracefully: missing deps disable related features with a helpful note.
+
+## TIDAL Integration (Optional)
+
+RockSync can embed the upstream tidal-dl-ng graphical interface to search and download from TIDAL within the “Tidal-dl-ng” page.
+
+- Install: `pip install tidal-dl-ng`
+- Open the app → “Tidal-dl-ng”. On first use, you will be prompted to sign in to TIDAL via your web browser.
+- Network access is required for login and downloading. If offline, the page will delay initialization and show a friendly message.
+
+Notes and Disclaimers
+- The TIDAL UI is not authored by this project. It is the official GUI from tidal-dl-ng embedded as-is.
+- tidal-dl-ng is a third‑party, open‑source project by exislow. Its license, terms, and disclaimers apply to all TIDAL functionality used via this integration. See:
+  - https://github.com/exislow/tidal-dl-ng
+- This project is not affiliated with, endorsed, or supported by TIDAL or its partners. Use at your own risk.
 
 ## Scripts Overview (CLI and via GUI “Advanced”)
 

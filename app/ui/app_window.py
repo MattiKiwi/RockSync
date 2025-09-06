@@ -21,6 +21,7 @@ from ui.database_pane import DatabasePane
 from ui.device_pane import DeviceExplorerPane
 from ui.sync_pane import SyncPane
 from ui.daily_mix_pane import DailyMixPane
+from ui.tidal_pane import TidalPane
 from ui.rockbox_pane import RockboxPane
 from theme import apply_theme
 from theme_loader import list_theme_files
@@ -153,7 +154,13 @@ class AppWindow(QMainWindow):
         rb_layout.addWidget(self.rockbox)
         self.stack.addWidget(self.rockbox_tab)
 
-        # Daily Mix (added at the end to keep existing indices stable)
+        # TIDAL Playlists (embed tidal-dl-ng GUI)
+        self.tidal_tab = QWidget(); td_layout = QVBoxLayout(self.tidal_tab)
+        self.tidal = TidalPane(self, self.tidal_tab)
+        td_layout.addWidget(self.tidal)
+        self.stack.addWidget(self.tidal_tab)
+
+        # Daily Mix (kept as a separate page)
         self.daily_tab = QWidget(); dl_layout = QVBoxLayout(self.daily_tab)
         self.daily = DailyMixPane(self, self.daily_tab)
         dl_layout.addWidget(self.daily)
@@ -181,15 +188,17 @@ class AppWindow(QMainWindow):
             it.setData(Qt.UserRole, int(page_index))
             self.nav.addItem(it)
 
-        add_page("Library", 0)
-        add_page("Device", 2)
-        add_page("Search", 1)
-        add_page("Sync", 4)
-        add_page("Playlists", 6)
-        add_page("Database", 3)
-        add_page("Settings", 7)
-        add_page("Rockbox", 5)
-        add_page("Advanced", 8)
+        # Use actual stack indices to avoid hardcoded mismatch as pages change
+        add_page("Library", self.stack.indexOf(self.explore_tab))
+        add_page("Device", self.stack.indexOf(self.device_tab))
+        add_page("Search", self.stack.indexOf(self.search_tab))
+        add_page("Sync", self.stack.indexOf(self.sync_tab))
+        add_page("Playlists", self.stack.indexOf(self.daily_tab))
+        add_page("Database", self.stack.indexOf(self.db_tab))
+        add_page("Settings", self.stack.indexOf(self.settings_tab))
+        add_page("Rockbox", self.stack.indexOf(self.rockbox_tab))
+        add_page("Advanced", self.stack.indexOf(self.run_tab))
+        add_page("Tidal-dl-ng", self.stack.indexOf(self.tidal_tab))
 
         def on_nav_changed():
             it = self.nav.currentItem()
@@ -213,6 +222,18 @@ class AppWindow(QMainWindow):
             if self.nav.item(i).data(Qt.UserRole) is not None:
                 self.nav.setCurrentRow(i)
                 break
+
+        # Lazy-initialize heavy/online pages when shown
+        def _on_page_changed(idx: int):
+            try:
+                if idx == self.stack.indexOf(self.tidal_tab):
+                    # Initialize Tidal pane on demand to avoid startup failures
+                    if hasattr(self, 'tidal'):
+                        self.tidal.activate()
+            except Exception:
+                pass
+
+        self.stack.currentChanged.connect(_on_page_changed)
 
         self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
 
@@ -437,6 +458,16 @@ class AppWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Select file", str(ROOT), "FLAC (*.flac);;All (*.*)")
         if path:
             line_edit.setText(path)
+
+    # --------------- Lifecycle ---------------
+    def closeEvent(self, event):
+        # Ensure embedded tidal-dl-ng cleans up background threads
+        try:
+            if hasattr(self, 'tidal') and hasattr(self.tidal, 'shutdown'):
+                self.tidal.shutdown()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     # --------------- Tasks tab ---------------
     def _build_run_tab(self, parent: QWidget):
