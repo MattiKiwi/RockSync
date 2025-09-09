@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euxo pipefail
           dnf -y update
-          dnf -y install python3 python3-pip git tar xz
+          dnf -y install python3 python3-pip git tar xz binutils patchelf
           python3 -m pip install --upgrade pip
           # Ensure `python` alias exists for subsequent steps
           ln -sf "$(command -v python3)" /usr/local/bin/python
