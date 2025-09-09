@@ -29,11 +29,7 @@ jobs:
 
       - name: Install build deps
         run: |
-          pip install \
-            PyInstaller \
-            PySide6 \
-            mutagen Pillow requests beautifulsoup4 psutil acoustid musicbrainzngs lyricsgenius tqdm \
-            tidal-dl-ng
+          pip install pyinstaller PySide6 mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng
 
       - name: Build with PyInstaller
         run: python -m pyinstaller rocksync.spec
@@ -88,4 +84,3 @@ jobs:
             artifacts/**/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

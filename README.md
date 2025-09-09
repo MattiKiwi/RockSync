@@ -5,9 +5,8 @@ An optional alternative to iTunes for Rockbox-based MP3 players. Browse your lib
 
 - Requirements: Python 3.9+ and `PySide6`.
 - Install (recommended):
-  - `pip install PySide6 mutagen Pillow requests beautifulsoup4 psutil acoustid musicbrainzngs lyricsgenius tqdm`
+  - `pip install PySide6 mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm`
   - Install `ffmpeg` (and `ffprobe`) via your OS package manager if you’ll convert/downsample.
-  - For AcoustID: install Chromaprint’s `fpcalc` binary (system package) if you plan to run genre tagging.
   - Optional (TIDAL downloads): `pip install tidal-dl-ng`
 - Run the app from the repo root:
 
@@ -55,12 +54,11 @@ Settings live in `app/settings.json`. Logs are written to `app/latest.log` and `
 - Rockbox detection: `psutil`
 - Themes browser/installer: `requests`, `beautifulsoup4`, `tqdm` (optional for CLI progress)
 - Lyrics (optional online): `lyricsgenius`
-- Genre tagging (optional): `acoustid` (aka pyacoustid), `musicbrainzngs`
+- Genre tagging (optional): `musicbrainzngs`
 - TIDAL integration (optional): `tidal-dl-ng`
 
 System tools required by some features/scripts:
 - `ffmpeg` and `ffprobe` on PATH (conversions, downsampling)
-- `fpcalc` (Chromaprint) for AcoustID lookups used by `tag_genres.py`
 
 The app degrades gracefully: missing deps disable related features with a helpful note.
 
@@ -95,7 +93,7 @@ Notes and Disclaimers
 - `scripts/daily_mix.py`: Build themed “Daily Mix” playlists using the Library/Device DB. See `--help` for advanced theme/seed options. Depends on `mutagen` (optional for durations).
 - `scripts/themes.py`: Browse, preview, download, and install Rockbox themes by target. Subcommands: `list-devices`, `list-themes`, `show`, `download`, `install`. Depends on `requests`, `beautifulsoup4`, optionally `tqdm`.
 - `scripts/rockbox_detector.py`: Cross‑platform Rockbox device detection using `psutil`.
-- `scripts/tag_genres.py`: Fill in genre tags using AcoustID + MusicBrainz. Options include `--library`, `--overwrite`, `--only-missing`, `--ext`, `--folder-fallback`. Depends on `mutagen`, `acoustid` (pyacoustid), `musicbrainzngs`; requires `fpcalc` and `ACOUSTID_API_KEY`.
+- `scripts/tag_genres.py`: Fill in genre tags using MusicBrainz. Options include `--library`, `--overwrite`, `--only-missing`, `--ext`, `--folder-fallback`. Depends on `mutagen`, `musicbrainzngs`.
 - `scripts/simple_mb_genres.py`: Simpler MusicBrainz‑based genre tagging helper. Depends on `mutagen`, `musicbrainzngs`.
 - `scripts/read_rockbox_tcd_dynamic.py`: Utility to read Rockbox “tcd” dynamic playlists (developer/advanced).
 

@@ -1,25 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-tag_genres.py — Fill in genre tags across a music library using AcoustID + MusicBrainz.
+tag_genres.py — Fill in genre tags across a music library using MusicBrainz.
 
 Features
-- Fingerprint & match via AcoustID (Chromaprint/fpcalc required).
 - Fetch canonical genres from MusicBrainz (recording/release/artist tags/genres).
 - Write 'genre' tag with mutagen (MP3/FLAC/OGG/OPUS/AAC/M4A/WAV/WV/AIFF/APE/MPC).
 - Dry-run, overwrite or only-missing modes, rate limiting, JSON cache.
 - Optional folder-name fallback (e.g., /Jazz/… infers "Jazz").
 
 Install
-    pip install mutagen pyacoustid musicbrainzngs
-
-System requirement
-    fpcalc (Chromaprint). On Linux: apt install chromaprint
-                             macOS: brew install chromaprint
-                             Windows: download binaries from AcoustID/Chromaprint
-
-Env
-    export ACOUSTID_API_KEY=your_key_here
+    pip install mutagen musicbrainzngs
 
 Usage
     # Dry run, only fill where genre is missing
@@ -55,12 +46,6 @@ from mutagen.oggvorbis import OggVorbis
 from mutagen.oggopus import OggOpus
 from mutagen.easymp4 import EasyMP4
 
-try:
-    import acoustid  # optional
-    _ACOUSTID_AVAILABLE = True
-except Exception:
-    acoustid = None  # type: ignore
-    _ACOUSTID_AVAILABLE = False
 import musicbrainzngs
 import sys
 
@@ -112,8 +97,7 @@ def cache_key_by_tags(audio: mutagen.FileType) -> Optional[str]:
         pass
     return None
 
-def cache_key_by_fp(fp_signature: str) -> str:
-    return f"fp::{fp_signature}"
+    
 
 def collect_genres(mb_recording: dict,
                    mb_release_group: Optional[dict],
@@ -163,7 +147,7 @@ def collect_genres(mb_recording: dict,
     return ordered
 
 def rate_limit_sleep(last_call_ts: List[float], min_interval: float = 1.0):
-    """MusicBrainz and AcoustID both appreciate ~1 req/sec."""
+    """Be nice to MusicBrainz (~1 req/sec)."""
     now = time.time()
     if last_call_ts and (now - last_call_ts[0] < min_interval):
         time.sleep(min_interval - (now - last_call_ts[0]))
@@ -184,132 +168,14 @@ def _format_duration(seconds: float) -> str:
 
 # ----------------------- Lookup logic -----------------------
 
-def lookup_genres_with_acoustid(file_path: Path, api_key: str,
-                                mb_client: musicbrainzngs,
-                                rl_ts: List[float],
-                                max_genres: int) -> List[str]:
-    """
-    Fingerprint -> AcoustID -> MusicBrainz recording/release/artist -> genre
-    """
-    # acoustid.match returns list of (score, recording_id(s))
-    rate_limit_sleep(rl_ts)
-    try:
-        results = acoustid.match(api_key, str(file_path))  # type: ignore[attr-defined]
-    except acoustid.FingerprintGenerationError:
-        return []
-    except Exception:
-        return []
-
-    best_recid = None
-    best_score = 0.0
-    for score, rid, title, artist in results:
-        if score > best_score and rid:
-            best_recid = rid
-            best_score = score
-
-    if not best_recid:
-        return []
-
-    # MusicBrainz: fetch recording with tags + references
-    rate_limit_sleep(rl_ts)
-    try:
-        rec = mb_client.get_recording_by_id(best_recid, includes=["tags", "releases", "artists"]).get("recording")
-    except Exception:
-        return []
-
-    def weighted_names(obj) -> List[Tuple[str, int]]:
-        if not obj:
-            return []
-        out: List[Tuple[str, int]] = []
-        g_list = obj.get("genre-list") or obj.get("genres") or []
-        for g in g_list:
-            name = (g.get("name") or "").strip()
-            if not name:
-                continue
-            cnt = g.get("count") or g.get("vote-count") or 1
-            try:
-                cnt = int(cnt)
-            except Exception:
-                cnt = 1
-            out.append((name, cnt))
-        t_list = obj.get("tag-list") or obj.get("tags") or []
-        for t in t_list:
-            name = (t.get("name") or "").strip()
-            if not name:
-                continue
-            cnt = t.get("count") or t.get("vote-count") or 1
-            try:
-                cnt = int(cnt)
-            except Exception:
-                cnt = 1
-            out.append((name, cnt))
-        out.sort(key=lambda x: x[1], reverse=True)
-        return out
-
-    seen = set()
-    ordered: List[str] = []
-    def add_from(obj) -> bool:
-        nonlocal ordered
-        for name, _w in weighted_names(obj):
-            key = name.lower()
-            if key not in seen:
-                seen.add(key)
-                ordered.append(name)
-                if len(ordered) >= max_genres:
-                    return True
-        return False
-
-    # recording
-    if add_from(rec):
-        return ordered[:max_genres]
-
-    # primary release
-    if rec and rec.get("release-list"):
-        rel_id = rec["release-list"][0]["id"]
-        mb_release = MB_RELEASE_CACHE.get(rel_id)
-        if not mb_release:
-            rate_limit_sleep(rl_ts)
-            try:
-                mb_release = mb_client.get_release_by_id(rel_id, includes=["tags"]).get("release")
-            except Exception:
-                mb_release = None
-            MB_RELEASE_CACHE[rel_id] = mb_release
-        if add_from(mb_release):
-            return ordered[:max_genres]
-        if mb_release and mb_release.get("release-group"):
-            rgid = mb_release["release-group"]["id"]
-            mb_release_group = MB_RG_CACHE.get(rgid)
-            if not mb_release_group:
-                rate_limit_sleep(rl_ts)
-                try:
-                    mb_release_group = mb_client.get_release_group_by_id(rgid, includes=["tags"]).get("release-group")
-                except Exception:
-                    mb_release_group = None
-                MB_RG_CACHE[rgid] = mb_release_group
-            if add_from(mb_release_group):
-                return ordered[:max_genres]
-
-    # primary artist
-    if rec and rec.get("artist-credit"):
-        art_id = rec["artist-credit"][0]["artist"]["id"]
-        mb_artist = MB_ARTIST_CACHE.get(art_id)
-        if not mb_artist:
-            rate_limit_sleep(rl_ts)
-            try:
-                mb_artist = mb_client.get_artist_by_id(art_id, includes=["tags"]).get("artist")
-            except Exception:
-                mb_artist = None
-            MB_ARTIST_CACHE[art_id] = mb_artist
-        add_from(mb_artist)
-
-    return ordered[:max_genres]
+    
 
 def lookup_genres_with_tags(audio_path: Path,
                             mb_client: musicbrainzngs,
                             rl_ts: List[float],
                             max_genres: int) -> List[str]:
     """
-    If we have artist/title (and maybe album, length), try MusicBrainz search without AcoustID.
+    If we have artist/title (and maybe album, length), try MusicBrainz search.
     """
     easy = mutagen.File(str(audio_path), easy=True)
     if not easy:
@@ -581,26 +447,7 @@ def process_file(p: Path, args, cache: Dict[str, Any], mb_client, rl_ts: List[fl
             elif isinstance(cached, str):
                 genres = [cached] if cached.strip() else None
 
-    # Lookup via AcoustID if no cache hit
-    if not genres and args.use_acoustid:
-        if not _ACOUSTID_AVAILABLE:
-            if args.verbose:
-                print(f"[acoustid] Skipping {p.name}: 'acoustid' module not installed")
-        else:
-            api_key = os.environ.get("ACOUSTID_API_KEY", "").strip()
-            if not api_key:
-                if args.verbose:
-                    print(f"[acoustid] Skipping {p.name}: ACOUSTID_API_KEY not set")
-            else:
-                try:
-                    genres = lookup_genres_with_acoustid(p, api_key, musicbrainzngs, rl_ts, args.max_genres)
-                    if genres:
-                        cache[cache_key_by_fp(str(p))] = genres
-                    elif args.verbose:
-                        print(f"[acoustid] No genre match for {p.name}")
-                except Exception as e:
-                    if args.verbose:
-                        print(f"[acoustid] Error for {p.name}: {e}")
+    # AcoustID flow removed; use MusicBrainz tag search and/or folder fallback
 
     # Lookup via tag search if still unknown
     if not genres and args.use_tag_search:
@@ -637,7 +484,7 @@ def process_file(p: Path, args, cache: Dict[str, Any], mb_client, rl_ts: List[fl
         return ("fail", "write-failed")
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Fill/overwrite genre tags using AcoustID + MusicBrainz.")
+    ap = argparse.ArgumentParser(description="Fill/overwrite genre tags using MusicBrainz.")
     ap.add_argument("--library", type=Path, required=True, help="Path to your music library root.")
     ap.add_argument("--dry-run", action="store_true", help="Show what would happen without writing tags.")
     group = ap.add_mutually_exclusive_group()
@@ -645,8 +492,7 @@ def parse_args():
     group.add_argument("--overwrite", action="store_true", help="Replace existing genre values.")
     ap.add_argument("--ext", nargs="*", default=DEFAULT_EXTS, help="File extensions to include (default: common audio).")
     ap.add_argument("--verbose", action="store_true", help="Verbose logging.")
-    ap.add_argument("--use-acoustid", action="store_true", help="Use AcoustID fingerprint lookup (requires ACOUSTID_API_KEY and fpcalc).")
-    ap.add_argument("--use-tag-search", action="store_true", help="Use MusicBrainz title/artist search if AcoustID fails or is disabled.")
+    ap.add_argument("--use-tag-search", action="store_true", help="Use MusicBrainz title/artist search.")
     ap.add_argument("--folder-fallback", action="store_true", help="Infer genre from folder names if lookups fail.")
     ap.add_argument("--max-genres", type=int, default=5, help="Maximum number of genres to write (default: 5).")
     ap.add_argument("--http-timeout", type=float, default=15.0, help="HTTP timeout in seconds for MusicBrainz requests (default: 15).")
@@ -673,7 +519,7 @@ def main():
         pass
 
     # Sensible defaults: if no lookup method selected, enable tag search by default
-    if not (args.use_acoustid or args.use_tag_search or args.folder_fallback):
+    if not (args.use_tag_search or args.folder_fallback):
         args.use_tag_search = True
         if args.verbose:
             print("Defaulting to --use-tag-search (no lookup method specified)")

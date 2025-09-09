@@ -4,14 +4,14 @@ Prereqs
 - Python 3.9+ (same as the app)
 - Virtual environment recommended
 - PyInstaller 5.10+ (or any recent 6.x)
-- System tools for optional features (ffmpeg/ffprobe, fpcalc) are not required to build, only to run certain tasks.
+- System tools for optional features (ffmpeg/ffprobe) are not required to build, only to run certain tasks.
 
 1) Create a venv and install deps
 ```
 python -m venv .venv
 . .venv/bin/activate          # on Windows: .venv\Scripts\activate
 pip install --upgrade pip
-pip install PyInstaller PySide6 mutagen Pillow requests beautifulsoup4 psutil acoustid musicbrainzngs lyricsgenius tqdm tidal-dl-ng
+pip install PyInstaller PySide6 mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng
 ```
 
 2) Build with the provided spec (recommended)
