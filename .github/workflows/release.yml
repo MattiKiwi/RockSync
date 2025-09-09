@@ -32,7 +32,7 @@ jobs:
           pip install pyinstaller PySide6 mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng
 
       - name: Build with PyInstaller
-        run: python -m pyinstaller rocksync.spec
+        run: pyinstaller rocksync.spec
 
       - name: Package (Linux/macOS)
         if: runner.os != 'Windows'
