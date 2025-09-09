@@ -27,11 +27,6 @@ def collect_dir_files(src_dir: Path, dest_prefix: str):
             pairs.append((str(full), dest_dir))
     return pairs
 
-# Bundle app resources used at runtime (Analysis expects pairs of (src, destdir))
-datas += [
-    (str(project_root / 'app' / 'settings.json'), 'app'),
-]
-
 # Recursively include themes and scripts as (file, destdir) pairs
 datas += collect_dir_files(project_root / 'app' / 'themes', 'app/themes')
 datas += collect_dir_files(project_root / 'scripts', 'scripts')
