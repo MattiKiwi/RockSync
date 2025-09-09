@@ -22,7 +22,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.9'
 
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
@@ -36,7 +36,7 @@ jobs:
             tidal-dl-ng
 
       - name: Build with PyInstaller
-        run: pyinstaller rocksync.spec
+        run: python -m pyinstaller rocksync.spec
 
       - name: Package (Linux/macOS)
         if: runner.os != 'Windows'
