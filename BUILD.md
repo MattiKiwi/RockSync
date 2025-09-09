@@ -57,19 +57,8 @@ CI Builds (GitHub Actions)
   - Tag push like `v1.2.3` → builds on Windows, macOS, Linux and publishes a GitHub Release with assets.
   - Manual run via “Run workflow” (workflow_dispatch) → uploads build artifacts to the run.
 - What it does:
-  - Builds native packages on:
-    - Ubuntu (GitHub runner)
-    - Debian (container)
-    - Fedora (container)
-    - Windows
-    - macOS
-  - Installs deps (PyInstaller + runtime libs), runs `pyinstaller rocksync.spec`.
-  - Packages outputs as:
-    - `RockSync-<tag>-Ubuntu.tar.gz`
-    - `RockSync-<tag>-Debian.tar.gz`
-    - `RockSync-<tag>-Fedora.tar.gz`
-    - `RockSync-<tag>-Windows.zip`
-    - `RockSync-<tag>-macOS.tar.gz`
+  - Sets up Python 3.12, installs deps (PyInstaller + runtime libs), runs `pyinstaller rocksync.spec`.
+  - Packages outputs as `RockSync-<tag>-<OS>.{zip|tar.gz}` and uploads to the Release.
 - Notes:
   - Cross‑compile is not supported by PyInstaller; the workflow builds natively on each OS runner.
   - macOS builds are unsigned; users may need to right‑click → Open to pass Gatekeeper.
