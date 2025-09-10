@@ -3,12 +3,19 @@ from __future__ import annotations
 import argparse, sys, textwrap, json
 from typing import Any, Dict, List, Optional, Tuple, Union
 from yt_dlp import YoutubeDL
+import concurrent.futures
+import urllib.parse
+try:
+    import requests  # Fast oEmbed lookups
+except Exception:
+    requests = None  # type: ignore
 
 # ---------- Helpers ----------
 def make_ydl(cookies_from_browser: Optional[str] = None,
              cookies_file: Optional[str] = None,
              flat: bool = True,
-             verbose: bool = False) -> YoutubeDL:
+             verbose: bool = False,
+             playlist_limit: Optional[int] = None) -> YoutubeDL:
     """
     Build a YoutubeDL instance configured for *browsing* (fast, no download).
     You can pass either cookies_from_browser (e.g. 'chrome', 'firefox', 'edge', 'brave')
@@ -21,9 +28,18 @@ def make_ydl(cookies_from_browser: Optional[str] = None,
         "noplaylist": False,
         "concurrent_fragment_downloads": 1,   # we aren't downloading anyway
         "ratelimit": 0,
+        # Bound retries and socket timeouts for snappier failures
+        "retries": 3,
+        "extractor_retries": 2,
+        "socket_timeout": 10,
+        # Enable cache (player JSON, etc.) for speed across runs
+        "cachedir": True,
         # A realistic UA can reduce bot friction on some hosts
         "http_headers": {"User-Agent": "Mozilla/5.0"},
     }
+    if playlist_limit is not None and isinstance(playlist_limit, int) and playlist_limit > 0:
+        # Stop extraction early for long playlists/feeds
+        ydl_opts["playlistend"] = int(playlist_limit)
     if cookies_from_browser:
         # yt-dlp Python API expects a tuple/list (browser[, profile[, keyring[, container]]]).
         # Passing a bare string can be unpacked char-by-char in some versions.
@@ -103,6 +119,110 @@ def _best_thumbnail(e: Dict[str, Any]) -> Optional[str]:
                 return last.get("url")
     return None
 
+def _fmt_duration(d: Union[int, float, str, None]) -> str:
+    try:
+        # yt-dlp may provide float; coerce to non-negative int seconds
+        secs = int(round(float(d)))
+        if secs < 0:
+            secs = 0
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+    except Exception:
+        return ""
+
+def _enrich_missing_metadata(rows: List[Dict[str, Any]],
+                             cookies_from_browser: Optional[str] = None,
+                             cookies_file: Optional[str] = None,
+                             verbose: bool = False,
+                             max_lookups: int = 24,
+                             max_workers: int = 8) -> None:
+    """Fast best-effort enrichment for missing 'channel' (and some other fields).
+
+    Strategy:
+    - Try YouTube oEmbed in parallel (very fast, public), to get author_name and thumbnail.
+    - For any remaining items, do a limited number of yt-dlp (non-flat) lookups as fallback.
+    - Update rows in-place; keeps total work bounded via limits.
+    """
+    if not rows:
+        return
+    # Limit the number of additional lookups to avoid heavy requests on large lists
+    def _looks_like_video(u: str) -> bool:
+        return (('/watch?v=' in u) or ('/shorts/' in u) or u.startswith('https://youtu.be/'))
+
+    todo = [r for r in rows
+            if not (r.get('channel') or '').strip()
+            and isinstance(r.get('url'), str)
+            and r['url'].startswith('http')
+            and _looks_like_video(r['url'])]
+    if not todo:
+        return
+    if max_lookups > 0:
+        todo = todo[:max_lookups]
+
+    # First try oEmbed concurrently for speed
+    failures: List[Dict[str, Any]] = []
+    if requests is not None:
+        def oembed_lookup(u: str) -> Optional[Dict[str, Any]]:
+            try:
+                url = 'https://www.youtube.com/oembed?format=json&url=' + urllib.parse.quote(u, safe='')
+                resp = requests.get(url, timeout=6)
+                if resp.status_code != 200:
+                    return None
+                data = resp.json()
+                return {
+                    'channel': data.get('author_name') or '',
+                    'thumbnail': data.get('thumbnail_url') or '',
+                }
+            except Exception:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(todo)))) as ex:
+            futs = {ex.submit(oembed_lookup, r['url']): r for r in todo}
+            for fut in concurrent.futures.as_completed(futs):
+                r = futs[fut]
+                info = fut.result()
+                if info and (info.get('channel') or info.get('thumbnail')):
+                    if info.get('channel') and not r.get('channel'):
+                        r['channel'] = info['channel']
+                    if info.get('thumbnail') and not r.get('thumbnail'):
+                        r['thumbnail'] = info['thumbnail']
+                else:
+                    failures.append(r)
+    else:
+        failures = todo[:]
+
+    # Limited fallback using yt-dlp for the first few unresolved
+    # Default to no heavy fallback for snappier UX; oEmbed covers public videos
+    fallback_cap = 0
+    if fallback_cap:
+        try:
+            with make_ydl(cookies_from_browser=cookies_from_browser,
+                          cookies_file=cookies_file,
+                          flat=False,
+                          verbose=verbose) as y2:
+                for r in failures[:fallback_cap]:
+                    url = r.get('url')
+                    if not url:
+                        continue
+                    try:
+                        info = y2.extract_info(url, download=False)
+                    except Exception:
+                        continue
+                    if not isinstance(info, dict):
+                        continue
+                    ch = info.get('uploader') or info.get('channel') or info.get('uploader_id') or info.get('channel_id') or ''
+                    if ch and not r.get('channel'):
+                        r['channel'] = ch
+                    if not r.get('duration') and info.get('duration') is not None:
+                        r['duration'] = _fmt_duration(info.get('duration'))
+                    if not r.get('upload_date'):
+                        r['upload_date'] = info.get('upload_date') or info.get('release_date') or ''
+                    if not r.get('thumbnail') and isinstance(info.get('thumbnail'), str):
+                        r['thumbnail'] = info.get('thumbnail')
+        except Exception:
+            pass
+
 def normalize(e: Dict[str, Any]) -> Dict[str, Any]:
     # yt-dlp keys vary by page type; this normalizes the core fields we care about
     url = e.get("webpage_url") or e.get("url") or e.get("original_url")
@@ -110,7 +230,7 @@ def normalize(e: Dict[str, Any]) -> Dict[str, Any]:
         "id": e.get("id"),
         "title": e.get("title"),
         "channel": e.get("uploader") or e.get("channel") or e.get("channel_id") or "",
-        "duration": e.get("duration") or "",
+        "duration": _fmt_duration(e.get("duration")),
         "upload_date": e.get("upload_date") or e.get("release_date") or "",
         "url": url if (url and url.startswith("http")) else (f"https://www.youtube.com/watch?v={e.get('id')}" if e.get("id") else url),
         "thumbnail": _best_thumbnail(e) or "",
@@ -118,37 +238,50 @@ def normalize(e: Dict[str, Any]) -> Dict[str, Any]:
 
 # ---------- Commands ----------
 def cmd_search(args):
-    with make_ydl(flat=True, verbose=args.verbose) as ydl:
+    with make_ydl(flat=True, verbose=args.verbose, playlist_limit=None) as ydl:
         url = f"ytsearch{args.limit}:{args.query}"
         ents = extract_entries(url, ydl, args.limit)
         rows = [normalize(e) for e in ents]
+        _enrich_missing_metadata(rows, verbose=args.verbose)
         emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_playlist(args):
     with make_ydl(cookies_from_browser=getattr(args, 'cookies_from_browser', None),
                   cookies_file=getattr(args, 'cookies_file', None),
-                  flat=True, verbose=args.verbose) as ydl:
+                  flat=True, verbose=args.verbose, playlist_limit=args.limit) as ydl:
         url = args.url
         ents = extract_entries(url, ydl, args.limit)
         rows = [normalize(e) for e in ents]
+        _enrich_missing_metadata(rows,
+                                 cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                                 cookies_file=getattr(args, 'cookies_file', None),
+                                 verbose=args.verbose)
         emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def _authed_ydl(args) -> YoutubeDL:
     if not (args.cookies_from_browser or args.cookies_file):
         raise SystemExit("This command requires auth. Pass --cookies-from-browser <browser> or --cookies-file <path>.")
     return make_ydl(cookies_from_browser=args.cookies_from_browser, cookies_file=args.cookies_file,
-                    flat=True, verbose=args.verbose)
+                    flat=True, verbose=args.verbose, playlist_limit=getattr(args, 'limit', None))
 
 def cmd_watch_later(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/playlist?list=WL", ydl, args.limit)
         rows = [normalize(e) for e in ents]
+        _enrich_missing_metadata(rows,
+                                 cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                                 cookies_file=getattr(args, 'cookies_file', None),
+                                 verbose=args.verbose)
         emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_liked(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/playlist?list=LL", ydl, args.limit)
         rows = [normalize(e) for e in ents]
+        _enrich_missing_metadata(rows,
+                                 cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                                 cookies_file=getattr(args, 'cookies_file', None),
+                                 verbose=args.verbose)
         emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_my_playlists(args):
@@ -160,12 +293,20 @@ def cmd_my_playlists(args):
             ne = normalize(e)
             ne["url"] = e.get("webpage_url") or e.get("url") or ne["url"]
             rows.append(ne)
+        _enrich_missing_metadata(rows,
+                                 cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                                 cookies_file=getattr(args, 'cookies_file', None),
+                                 verbose=args.verbose)
         emit_rows(rows, [("title", "Playlist"), ("channel", "Owner/Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_subscriptions(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/feed/channels", ydl, args.limit)
         rows = [normalize(e) for e in ents]
+        _enrich_missing_metadata(rows,
+                                 cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                                 cookies_file=getattr(args, 'cookies_file', None),
+                                 verbose=args.verbose)
         emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_home(args):
@@ -201,7 +342,6 @@ def cmd_home(args):
             filtered = [e for e in trial if isinstance(e, dict) and not is_bogus(e)]
             if filtered:
                 ents = filtered
-                ents = trial
                 break
         if not ents:
             raise SystemExit(
@@ -209,6 +349,10 @@ def cmd_home(args):
                 "Try 'subs', 'watchlater', or 'liked' instead, or update yt-dlp."
             )
         rows = [normalize(e) for e in ents]
+        _enrich_missing_metadata(rows,
+                                 cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                                 cookies_file=getattr(args, 'cookies_file', None),
+                                 verbose=args.verbose)
         emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 # ---------- Main ----------

@@ -418,20 +418,23 @@ class AppWindow(QMainWindow):
         v.addWidget(btn_row)
 
     def on_save_settings(self):
-        self.settings["music_root"] = self.set_music_root.text()
-        self.settings["lyrics_subdir"] = self.set_lyrics_subdir.text()
-        self.settings["lyrics_ext"] = self.set_lyrics_ext.text()
-        self.settings["cover_size"] = self.set_cover_size.text()
-        self.settings["cover_max"] = int(self.set_cover_max.value())
-        self.settings["jobs"] = int(self.set_jobs.value())
-        self.settings["genius_token"] = self.set_genius.text()
-        self.settings["lastfm_key"] = self.set_lastfm.text()
-        self.settings["debug"] = bool(self.debug_cb.isChecked())
-        self.settings["dummy_device_path"] = self.set_dummy_device.text()
-        self.settings["dummy_device_enabled"] = bool(self.dummy_enable_cb.isChecked())
-        self.settings["ffmpeg_path"] = self.set_ffmpeg_path.text()
-        self.settings["theme_file"] = self.theme_box.currentText()
-        if save_settings(self.settings):
+        patch = {
+            "music_root": self.set_music_root.text(),
+            "lyrics_subdir": self.set_lyrics_subdir.text(),
+            "lyrics_ext": self.set_lyrics_ext.text(),
+            "cover_size": self.set_cover_size.text(),
+            "cover_max": int(self.set_cover_max.value()),
+            "jobs": int(self.set_jobs.value()),
+            "genius_token": self.set_genius.text(),
+            "lastfm_key": self.set_lastfm.text(),
+            "debug": bool(self.debug_cb.isChecked()),
+            "dummy_device_path": self.set_dummy_device.text(),
+            "dummy_device_enabled": bool(self.dummy_enable_cb.isChecked()),
+            "ffmpeg_path": self.set_ffmpeg_path.text(),
+            "theme_file": self.theme_box.currentText(),
+        }
+        self.settings.update(patch)
+        if save_settings(patch):
             self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
             QMessageBox.information(self, "Settings", "Settings saved.")
             self._reconfigure_logging()

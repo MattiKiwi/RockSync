@@ -108,9 +108,10 @@ def run(argv: List[str]) -> int:
 
     # Build CLI command for yt-dlp for maximum compatibility with its args
     cmd: List[str] = ['yt-dlp']
-    # Destination
-    outtmpl = str(Path(dest) / '%(title)s [%(id)s].%(ext)s')
-    cmd += ['-o', outtmpl]
+    # Destination base path: use --paths so any -o from profiles remains relative to dest
+    cmd += ['--paths', dest]
+    # Default filename template (can be overridden by profile/raw args)
+    cmd += ['-o', '%(title)s [%(id)s].%(ext)s']
     # Determine effective ffmpeg path:
     # Priority: explicit CLI flag > provided inside profile/raw args > app settings
     profile_args_str = ''

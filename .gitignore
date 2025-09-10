@@ -202,3 +202,4 @@ __marimo__/
 rockbox
 *.sqlite3
 settings.json
+yt_dlp.txt
