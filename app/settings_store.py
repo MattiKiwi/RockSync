@@ -30,11 +30,15 @@ DEFAULT_SETTINGS = {
     "lastfm_key": "",
     "debug": False,
     "theme_file": "modern-light.css",
-    # YouTube pane defaults
+    # YouTube pane defaults (editable presets)
     "youtube_profiles": [
-        {"name": "Audio m4a (bestaudio)", "args": "--extract-audio --audio-format m4a"},
-        {"name": "Audio flac (bestaudio)", "args": "--extract-audio --audio-format flac"},
-        {"name": "Video mp4 (best)", "args": "-f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'"},
+        {"name": "Preset: Best Audio (m4a)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\""},
+        {"name": "Preset: Best Audio (flac)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" --audio-format flac"},
+        {"name": "Preset: Best Video (mp4)", "args": "-f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'"},
+        {"name": "Preset: Playlist Audio (indexed)",
+         "args": "--yes-playlist --extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" -o '%(playlist_title)s/%(playlist_index|02d)s. %(title)s.%(ext)s'"},
+        {"name": "Preset: Video Split Chapters",
+         "args": "--split-chapters -f \"ba[ext=m4a]/ba/bestaudio\" --extract-audio -o 'chapter:%(title)s/%(section_number|02d)s. %(section_title)s.%(ext)s'"},
     ],
     "youtube_last_profile": "",
     "youtube_default_dest": _default_music_root(),
@@ -56,11 +60,42 @@ def load_settings():
 
 
 def save_settings(settings) -> bool:
+    """Persist settings without discarding keys written by other parts of the app.
+
+    - Loads the current on-disk JSON (if any)
+    - Deep-merges provided settings into it (dict values merged, others replaced)
+    - Writes the merged result atomically
+    """
+    def _deep_merge(dst, src):
+        try:
+            # Merge src into dst in-place, returning dst
+            if isinstance(dst, dict) and isinstance(src, dict):
+                for k, v in src.items():
+                    if k in dst and isinstance(dst[k], dict) and isinstance(v, dict):
+                        _deep_merge(dst[k], v)
+                    else:
+                        dst[k] = v
+                return dst
+            # Not both dicts: replace
+            return src
+        except Exception:
+            return src
+
     try:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
+        current = {}
+        if CONFIG_PATH.exists():
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as rf:
+                    current = json.load(rf) or {}
+            except Exception:
+                current = {}
+        merged = _deep_merge(current if isinstance(current, dict) else {}, settings or {})
+        tmp_path = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2)
+        tmp_path.replace(CONFIG_PATH)
         return True
-    except Exception as e:
+    except Exception:
         # UI layer is responsible for showing errors
         return False

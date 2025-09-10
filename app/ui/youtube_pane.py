@@ -4,12 +4,14 @@ import shlex
 import sys
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, QTimer, QProcess
+from PySide6.QtCore import Qt, QTimer, QProcess, QUrl, QSize, QEvent
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QComboBox, QTableWidget, QTableWidgetItem, QSpinBox, QFileDialog, QGroupBox,
+    QComboBox, QListWidget, QListWidgetItem, QSpinBox, QFileDialog, QGroupBox,
     QCheckBox, QMessageBox, QDialog, QFormLayout, QAbstractItemView, QPlainTextEdit
 )
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
 from core import ROOT, SCRIPTS_DIR
 from settings_store import load_settings, save_settings
@@ -26,7 +28,8 @@ class YouTubePane(QWidget):
     - Supports cookies from browser or cookies.txt, and download profiles/presets.
     """
 
-    COLS = ("title", "channel", "duration", "upload_date", "url")
+    # Data keys provided by yt_browse.py
+    COLS = ("title", "channel", "duration", "upload_date", "url", "thumbnail")
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -63,9 +66,9 @@ class YouTubePane(QWidget):
         self.btn_home = QPushButton("Home")
         self.btn_watchlater = QPushButton("Watch Later")
         self.btn_liked = QPushButton("Liked")
-        self.btn_subs = QPushButton("Subscriptions")
+        #self.btn_subs = QPushButton("Subscriptions")
         self.btn_mypls = QPushButton("My Playlists")
-        for b in (self.btn_home, self.btn_watchlater, self.btn_liked, self.btn_subs, self.btn_mypls):
+        for b in (self.btn_home, self.btn_watchlater, self.btn_liked, self.btn_mypls):
             b.clicked.connect(self.on_category)
             row2.addWidget(b)
 
@@ -84,14 +87,21 @@ class YouTubePane(QWidget):
         row2.addWidget(b_cf)
         root.addLayout(row2)
 
-        # Results table
-        self.table = QTableWidget(0, len(self.COLS))
-        self.table.setHorizontalHeaderLabels([c.replace('_', ' ').title() for c in self.COLS])
-        self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        root.addWidget(self.table, 1)
+        # Results view (YouTube-like cards with thumbnails)
+        self.list = QListWidget()
+        self.list.setViewMode(QListWidget.IconMode)
+        self.list.setFlow(QListWidget.LeftToRight)
+        self.list.setWrapping(True)
+        self.list.setResizeMode(QListWidget.Adjust)
+        self.list.setSpacing(12)
+        self.list.setUniformItemSizes(False)
+        self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # Responsive card metrics
+        self._min_card_width = 260
+        self._thumb_size = QSize(320, 180)
+        self._card_size = QSize(self._thumb_size.width() + 16, self._thumb_size.height() + 80)
+        self.list.installEventFilter(self)
+        root.addWidget(self.list, 1)
 
         # Download controls
         dl_group = QGroupBox("Download")
@@ -121,6 +131,47 @@ class YouTubePane(QWidget):
         # Browse process state for yt_browse.py
         self._browse_proc: Optional[QProcess] = None
         self._browse_buf: str = ''
+        # Network for thumbnails
+        self._net = QNetworkAccessManager(self)
+        # Initial layout sizing
+        QTimer.singleShot(0, self._recompute_grid)
+
+    def eventFilter(self, obj, ev):
+        if obj is self.list and ev.type() in (QEvent.Resize, QEvent.Show, QEvent.LayoutRequest):
+            QTimer.singleShot(0, self._recompute_grid)
+        return super().eventFilter(obj, ev)
+
+    def _recompute_grid(self):
+        try:
+            vpw = max(1, self.list.viewport().width())
+            spacing = self.list.spacing() or 0
+            # Compute columns to use most width with minimal leftover
+            minw = self._min_card_width
+            cols = max(1, (vpw + spacing) // (minw + spacing))
+            # Card width uses available width minus inter-column spacing (no outer spacing)
+            cw = max(minw, (vpw - spacing * max(0, cols - 1)) // cols)
+            # Account for card internal margins (6 left/right)
+            thumb_w = max(120, cw - 16)
+            thumb_h = int(thumb_w * 9 / 16)
+            self._thumb_size = QSize(thumb_w, thumb_h)
+            self._card_size = QSize(cw, thumb_h + 80)
+            self.list.setGridSize(self._card_size)
+            # Update existing items/widgets
+            for i in range(self.list.count()):
+                it = self.list.item(i)
+                if it:
+                    it.setSizeHint(self._card_size)
+                    w = self.list.itemWidget(it)
+                    if w:
+                        thumb = w.findChild(QLabel, "VideoThumb")
+                        if thumb:
+                            thumb.setFixedSize(self._thumb_size)
+                            # Rescale if we have original pixmap
+                            raw = getattr(thumb, "_raw_pixmap", None)
+                            if isinstance(raw, QPixmap) and not raw.isNull():
+                                thumb.setPixmap(raw.scaled(self._thumb_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+        except Exception:
+            pass
 
     # ---------- Helpers ----------
     def _cookie_args(self) -> Dict[str, Optional[str]]:
@@ -146,28 +197,89 @@ class YouTubePane(QWidget):
         self.status.setText(text)
 
     def _insert_rows(self, rows: List[Dict[str, Any]]):
-        for r in rows:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            vals = [str(r.get(k, '') or '') for k in self.COLS]
-            for col, val in enumerate(vals):
-                item = QTableWidgetItem(val)
-                if col == len(self.COLS) - 1:
-                    # URL column wraps long text less usefully; keep as is
-                    pass
-                self.table.setItem(row, col, item)
+        for data in rows:
+            it = QListWidgetItem()
+            # Keep URL + all metadata on the item
+            it.setData(Qt.UserRole, data)
+            it.setSizeHint(self._card_size)
+            self.list.addItem(it)
+            w = self._make_card_widget(data)
+            self.list.setItemWidget(it, w)
+
+    def _make_card_widget(self, data: Dict[str, Any]) -> QWidget:
+        card = QWidget(); card.setObjectName("VideoCard")
+        v = QVBoxLayout(card); v.setContentsMargins(6, 6, 6, 6); v.setSpacing(6)
+        # Thumbnail
+        thumb = QLabel(); thumb.setObjectName("VideoThumb"); thumb.setFixedSize(self._thumb_size); thumb.setAlignment(Qt.AlignCenter)
+        thumb.setStyleSheet("background:#222; border-radius:4px;")
+        v.addWidget(thumb)
+        # Title
+        title = QLabel(str(data.get('title') or ''))
+        title.setWordWrap(True)
+        title.setStyleSheet("font-weight:600;")
+        v.addWidget(title)
+        # Meta: channel + duration
+        meta = QLabel(" · ".join([x for x in [str(data.get('channel') or ''), str(data.get('duration') or '')] if x]))
+        meta.setStyleSheet("color:#888;")
+        v.addWidget(meta)
+        # Load thumbnail async
+        url = str(data.get('thumbnail') or '')
+        if url and url.startswith('http'):
+            try:
+                req = QNetworkRequest(QUrl(url))
+                reply = self._net.get(req)
+                def _on_done():
+                    try:
+                        ba = reply.readAll()
+                        px = QPixmap()
+                        if px.loadFromData(ba):
+                            # Scale/crop to fit
+                            thumb._raw_pixmap = px  # store original for rescale
+                            scaled = px.scaled(self._thumb_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                            thumb.setPixmap(scaled)
+                    finally:
+                        reply.deleteLater()
+                reply.finished.connect(_on_done)
+            except Exception:
+                pass
+        return card
 
     def _load_profiles(self):
-        # Built-in presets
-        presets = [
-            {"name": "Preset: Best Audio (m4a)", "args": "--extract-audio --audio-format m4a"},
-            {"name": "Preset: Best Audio (flac)", "args": "--extract-audio --audio-format flac"},
+        # Ensure default presets exist in settings (non-destructive merge by name)
+        defaults: List[Dict[str, str]] = [
+            {"name": "Preset: Best Audio (m4a)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\""},
+            {"name": "Preset: Best Audio (flac)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" --audio-format flac"},
             {"name": "Preset: Best Video (mp4)", "args": "-f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'"},
+            {"name": "Preset: Playlist Audio (indexed)",
+             "args": "--yes-playlist --extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" -o '%(playlist_title)s/%(playlist_index|02d)s. %(title)s.%(ext)s'"},
+            {"name": "Preset: Best Audio Split Chapters",
+             "args": "--split-chapters -f \"ba[ext=m4a]/ba/bestaudio\" --extract-audio -o 'chapter:%(title)s/%(section_number|02d)s. %(section_title)s.%(ext)s'"},
         ]
-        user_profiles: List[Dict[str, str]] = self.settings.get('youtube_profiles', []) or []
-        self._profiles = presets + user_profiles
+        profiles: List[Dict[str, str]] = self.settings.get('youtube_profiles', []) or []
+        existing = { (p.get('name') or ''): p for p in profiles }
+        changed = False
+        for d in defaults:
+            nm = d.get('name') or ''
+            if not nm:
+                continue
+            if nm not in existing:
+                profiles.append(d.copy())
+                changed = True
+            else:
+                # Migrate old split-chapters template to use chapter-specific output
+                if 'Split Chapters' in nm:
+                    cur = existing[nm]
+                    args = str(cur.get('args') or '')
+                    if ' - %(section_number' in args and 'chapter:' not in args:
+                        cur['args'] = d['args']
+                        changed = True
+        if changed:
+            self.settings['youtube_profiles'] = profiles
+            save_settings({'youtube_profiles': profiles})
+        # Load profiles solely from settings so users can edit built-ins too
+        self._profiles = profiles
         self.profile_combo.clear()
-        for p in self._profiles:
+        for p in profiles:
             self.profile_combo.addItem(p.get('name') or '(unnamed)', p)
         # Restore last selection
         last = self.settings.get('youtube_last_profile')
@@ -241,7 +353,7 @@ class YouTubePane(QWidget):
             if not replaced:
                 profiles.append({'name': name, 'args': args})
             self.settings['youtube_profiles'] = profiles
-            if not save_settings(self.settings):
+            if not save_settings({'youtube_profiles': profiles}):
                 QMessageBox.critical(dlg, 'Profiles', 'Could not save settings.')
                 return
             refresh_select()
@@ -255,7 +367,7 @@ class YouTubePane(QWidget):
             profiles = (self.settings.get('youtube_profiles', []) or [])
             profiles = [p for p in profiles if p.get('name') != name]
             self.settings['youtube_profiles'] = profiles
-            if not save_settings(self.settings):
+            if not save_settings({'youtube_profiles': profiles}):
                 QMessageBox.critical(dlg, 'Profiles', 'Could not save settings.')
                 return
             refresh_select()
@@ -457,8 +569,8 @@ class YouTubePane(QWidget):
             except Exception:
                 pass
             self._browse_proc = None
-        # Clear table and status
-        self.table.setRowCount(0)
+        # Clear list and status
+        self.list.clear()
         self._browse_buf = ''
         py = shlex.quote(sys.executable)
         script = shlex.quote(str(SCRIPTS_DIR / 'yt_browse.py'))
@@ -488,8 +600,11 @@ class YouTubePane(QWidget):
                         'duration': obj.get('duration', ''),
                         'upload_date': obj.get('upload_date', ''),
                         'url': obj.get('url', ''),
+                        'thumbnail': obj.get('thumbnail', ''),
                     }
                     self._insert_rows([row])
+                    # Adjust layout responsively as items stream in
+                    self._recompute_grid()
                 except Exception:
                     # non-JSON line: status or error
                     self._set_status(line)
@@ -501,17 +616,16 @@ class YouTubePane(QWidget):
         p.start("/bin/sh", ["-c", cmd])
 
     def on_download_selected(self):
-        rows = sorted(set(r.row() for r in self.table.selectedIndexes()))
-        if not rows:
-            QMessageBox.information(self, "YouTube", "Select one or more rows to download.")
+        items = self.list.selectedItems()
+        if not items:
+            QMessageBox.information(self, "YouTube", "Select one or more videos to download.")
             return
         urls = []
-        for r in rows:
-            it = self.table.item(r, len(self.COLS) - 1)
-            if it:
-                u = (it.text() or '').strip()
-                if u:
-                    urls.append(u)
+        for it in items:
+            d = it.data(Qt.UserRole) or {}
+            u = str((d.get('url') or '')).strip()
+            if u:
+                urls.append(u)
         if not urls:
             QMessageBox.warning(self, "YouTube", "No URLs found in the selected rows.")
             return
@@ -524,12 +638,15 @@ class YouTubePane(QWidget):
         if isinstance(prof, dict):
             args_str = prof.get('args', '') or ''
             # remember selection
-            self.settings['youtube_last_profile'] = prof.get('name')
-            self.settings['youtube_default_dest'] = dest
-            self.settings['youtube_use_cookies'] = bool(self.cookies_cb.isChecked())
-            self.settings['youtube_cookie_browser'] = self.browser_combo.currentText()
-            self.settings['youtube_cookie_file'] = self.cookies_path.text()
-            save_settings(self.settings)
+            patch = {
+                'youtube_last_profile': prof.get('name'),
+                'youtube_default_dest': dest,
+                'youtube_use_cookies': bool(self.cookies_cb.isChecked()),
+                'youtube_cookie_browser': self.browser_combo.currentText(),
+                'youtube_cookie_file': self.cookies_path.text(),
+            }
+            self.settings.update(patch)
+            save_settings(patch)
 
         # Build command for downloader script
         py = shlex.quote(sys.executable)

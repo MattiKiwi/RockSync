@@ -79,6 +79,30 @@ def extract_entries(url: str, ydl: YoutubeDL, limit: int) -> List[Dict[str, Any]
             entries = [info]
     return entries[:limit]
 
+def _best_thumbnail(e: Dict[str, Any]) -> Optional[str]:
+    # Prefer explicit 'thumbnail', else pick the largest from 'thumbnails'
+    th = e.get("thumbnail")
+    if isinstance(th, str) and th.startswith("http"):
+        return th
+    ths = e.get("thumbnails") or []
+    if isinstance(ths, list) and ths:
+        # Sort by area or width if available
+        def score(t: Dict[str, Any]) -> int:
+            w = int(t.get("width") or 0)
+            h = int(t.get("height") or 0)
+            return w * h if (w and h) else w or h
+        try:
+            best = max((t for t in ths if isinstance(t, dict) and isinstance(t.get("url"), str)), key=score)
+            url = best.get("url")
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+        except Exception:
+            # Fallback to last item
+            last = ths[-1]
+            if isinstance(last, dict) and isinstance(last.get("url"), str):
+                return last.get("url")
+    return None
+
 def normalize(e: Dict[str, Any]) -> Dict[str, Any]:
     # yt-dlp keys vary by page type; this normalizes the core fields we care about
     url = e.get("webpage_url") or e.get("url") or e.get("original_url")
@@ -89,6 +113,7 @@ def normalize(e: Dict[str, Any]) -> Dict[str, Any]:
         "duration": e.get("duration") or "",
         "upload_date": e.get("upload_date") or e.get("release_date") or "",
         "url": url if (url and url.startswith("http")) else (f"https://www.youtube.com/watch?v={e.get('id')}" if e.get("id") else url),
+        "thumbnail": _best_thumbnail(e) or "",
     }
 
 # ---------- Commands ----------
