@@ -22,6 +22,7 @@ from ui.device_pane import DeviceExplorerPane
 from ui.sync_pane import SyncPane
 from ui.daily_mix_pane import DailyMixPane
 from ui.tidal_pane import TidalPane
+from ui.youtube_pane import YouTubePane
 from ui.rockbox_pane import RockboxPane
 from theme import apply_theme
 from theme_loader import list_theme_files
@@ -160,6 +161,12 @@ class AppWindow(QMainWindow):
         td_layout.addWidget(self.tidal)
         self.stack.addWidget(self.tidal_tab)
 
+        # YouTube (browse + download)
+        self.youtube_tab = QWidget(); yt_layout = QVBoxLayout(self.youtube_tab)
+        self.youtube = YouTubePane(self, self.youtube_tab)
+        yt_layout.addWidget(self.youtube)
+        self.stack.addWidget(self.youtube_tab)
+
         # Daily Mix (kept as a separate page)
         self.daily_tab = QWidget(); dl_layout = QVBoxLayout(self.daily_tab)
         self.daily = DailyMixPane(self, self.daily_tab)
@@ -199,6 +206,7 @@ class AppWindow(QMainWindow):
         add_page("Rockbox", self.stack.indexOf(self.rockbox_tab))
         add_page("Advanced", self.stack.indexOf(self.run_tab))
         add_page("Tidal-dl-ng", self.stack.indexOf(self.tidal_tab))
+        add_page("YouTube", self.stack.indexOf(self.youtube_tab))
 
         def on_nav_changed():
             it = self.nav.currentItem()
@@ -373,6 +381,17 @@ class AppWindow(QMainWindow):
         self.dummy_enable_cb = QCheckBox("Enable dummy device in selectors")
         self.dummy_enable_cb.setChecked(bool(self.settings.get("dummy_device_enabled", False)))
         adv_form.addRow("Dummy device", self.dummy_enable_cb)
+
+        # FFmpeg location (used by YouTube downloader and other tools)
+        ffmpeg_row = QWidget(); ffh = QHBoxLayout(ffmpeg_row); ffh.setContentsMargins(0,0,0,0)
+        self.set_ffmpeg_path = QLineEdit(self.settings.get("ffmpeg_path", ""))
+        self.set_ffmpeg_path.setPlaceholderText("/path/to/ffmpeg OR folder containing ffmpeg/ffprobe")
+        ffh.addWidget(self.set_ffmpeg_path, 1)
+        b_ff = QPushButton("Browse")
+        b_ff.setToolTip("Select a folder containing ffmpeg/ffprobe (or type a full ffmpeg path)")
+        b_ff.clicked.connect(lambda: self._browse_dir_into(self.set_ffmpeg_path))
+        ffh.addWidget(b_ff)
+        adv_form.addRow("FFmpeg location", ffmpeg_row)
         # Toggle button
         adv_toggle = QPushButton("Show Advanced Options")
         adv_toggle.setCheckable(True)
@@ -410,6 +429,7 @@ class AppWindow(QMainWindow):
         self.settings["debug"] = bool(self.debug_cb.isChecked())
         self.settings["dummy_device_path"] = self.set_dummy_device.text()
         self.settings["dummy_device_enabled"] = bool(self.dummy_enable_cb.isChecked())
+        self.settings["ffmpeg_path"] = self.set_ffmpeg_path.text()
         self.settings["theme_file"] = self.theme_box.currentText()
         if save_settings(self.settings):
             self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")
@@ -436,6 +456,10 @@ class AppWindow(QMainWindow):
         self.debug_cb.setChecked(bool(self.settings.get('debug', False)))
         self.set_dummy_device.setText(self.settings.get('dummy_device_path', ''))
         self.dummy_enable_cb.setChecked(bool(self.settings.get('dummy_device_enabled', False)))
+        try:
+            self.set_ffmpeg_path.setText(self.settings.get('ffmpeg_path', ''))
+        except Exception:
+            pass
         self.theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
         try:
             self.quick_theme_box.setCurrentText(self.settings.get('theme_file', 'system'))

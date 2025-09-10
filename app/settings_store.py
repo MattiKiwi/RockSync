@@ -18,6 +18,9 @@ DEFAULT_SETTINGS = {
     "music_root": _default_music_root(),
     "dummy_device_path": "",
     "dummy_device_enabled": False,
+    # Path to ffmpeg (binary or directory containing ffmpeg/ffprobe). Optional.
+    # If empty, tools will rely on PATH.
+    "ffmpeg_path": "",
     "lyrics_subdir": "Lyrics",
     "lyrics_ext": ".lrc",
     "cover_size": "100x100",
@@ -27,6 +30,17 @@ DEFAULT_SETTINGS = {
     "lastfm_key": "",
     "debug": False,
     "theme_file": "modern-light.css",
+    # YouTube pane defaults
+    "youtube_profiles": [
+        {"name": "Audio m4a (bestaudio)", "args": "--extract-audio --audio-format m4a"},
+        {"name": "Audio flac (bestaudio)", "args": "--extract-audio --audio-format flac"},
+        {"name": "Video mp4 (best)", "args": "-f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'"},
+    ],
+    "youtube_last_profile": "",
+    "youtube_default_dest": _default_music_root(),
+    "youtube_use_cookies": False,
+    "youtube_cookie_browser": "firefox",
+    "youtube_cookie_file": "",
 }
 
 

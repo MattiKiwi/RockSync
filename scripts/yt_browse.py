@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, sys, textwrap
+import argparse, sys, textwrap, json
 from typing import Any, Dict, List, Optional, Tuple, Union
 from yt_dlp import YoutubeDL
 
@@ -33,12 +33,21 @@ def make_ydl(cookies_from_browser: Optional[str] = None,
         ydl_opts["cookiefile"] = cookies_file
     return YoutubeDL(ydl_opts)
 
-def print_rows(rows: List[Dict[str, Any]], cols: List[Tuple[str, str]]):
-    # cols = [(field, header), ...]
+def emit_rows(rows: List[Dict[str, Any]], cols: List[Tuple[str, str]], fmt: str = 'table'):
+    # fmt: 'table' or 'jsonl'
+    if fmt == 'jsonl':
+        for r in rows:
+            try:
+                print(json.dumps(r, ensure_ascii=False))
+            except Exception:
+                # Fallback to str keys only
+                clean = {k: (str(v) if not isinstance(v, (str, int, float, bool)) else v) for k, v in r.items()}
+                print(json.dumps(clean, ensure_ascii=False))
+        return
+    # Table mode
     if not rows:
         print("(no results)")
         return
-    # simple human-readable table
     widths = []
     for field, header in cols:
         maxw = max(len(header), *(len(str(r.get(field, ""))) for r in rows))
@@ -88,14 +97,16 @@ def cmd_search(args):
         url = f"ytsearch{args.limit}:{args.query}"
         ents = extract_entries(url, ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        print_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")])
+        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_playlist(args):
-    with make_ydl(flat=True, verbose=args.verbose) as ydl:
+    with make_ydl(cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                  cookies_file=getattr(args, 'cookies_file', None),
+                  flat=True, verbose=args.verbose) as ydl:
         url = args.url
         ents = extract_entries(url, ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        print_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")])
+        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def _authed_ydl(args) -> YoutubeDL:
     if not (args.cookies_from_browser or args.cookies_file):
@@ -107,13 +118,13 @@ def cmd_watch_later(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/playlist?list=WL", ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        print_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")])
+        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_liked(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/playlist?list=LL", ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        print_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")])
+        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_my_playlists(args):
     with _authed_ydl(args) as ydl:
@@ -124,26 +135,22 @@ def cmd_my_playlists(args):
             ne = normalize(e)
             ne["url"] = e.get("webpage_url") or e.get("url") or ne["url"]
             rows.append(ne)
-        print_rows(rows, [("title", "Playlist"), ("channel", "Owner/Channel"), ("url", "URL")])
+        emit_rows(rows, [("title", "Playlist"), ("channel", "Owner/Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_subscriptions(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/feed/channels", ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        print_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")])
+        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_home(args):
     with _authed_ydl(args) as ydl:
         # Try a few known URLs for the Home feed; yt-dlp support varies by version.
         # Include desktop and mobile variants and older aliases.
         candidates = [
-            "https://www.youtube.com/feed/home",
-            "https://www.youtube.com/feed/what_to_watch",
             "https://www.youtube.com/feed/recommended",
             "https://www.youtube.com/?app=desktop",
             "https://www.youtube.com/?app=m&persist_app=1",
-            "https://m.youtube.com/?persist_app=1",
-            "https://m.youtube.com/feed/home",
             "https://www.youtube.com/",
         ]
         ents: List[Dict[str, Any]] = []
@@ -177,7 +184,7 @@ def cmd_home(args):
                 "Try 'subs', 'watchlater', or 'liked' instead, or update yt-dlp."
             )
         rows = [normalize(e) for e in ents]
-        print_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")])
+        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 # ---------- Main ----------
 def main():
@@ -187,6 +194,7 @@ def main():
         description="Browse YouTube with yt-dlp (search, playlists, Watch Later, subscriptions, home feed)."
     )
     p.add_argument("--verbose", action="store_true", help="Verbose yt-dlp output")
+    p.add_argument("--format", choices=["table","jsonl"], default="table", help="Output format")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("search", help="Search public videos")
@@ -197,6 +205,11 @@ def main():
     pl = sub.add_parser("playlist", help="Browse a playlist by URL")
     pl.add_argument("url", help="Playlist URL (public or unlisted; private requires cookies)")
     pl.add_argument("--limit", type=int, default=200)
+    # Optional cookies for private playlists
+    pl.add_argument("--cookies-from-browser", metavar="BROWSER",
+                   help="Read cookies directly from your browser (e.g. chrome, firefox, edge, brave)")
+    pl.add_argument("--cookies-file", metavar="PATH",
+                   help="Path to cookies.txt (Netscape format)")
     pl.set_defaults(func=cmd_playlist)
 
     # Auth-needed commands share cookie args
