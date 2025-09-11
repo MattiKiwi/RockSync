@@ -16,7 +16,6 @@ Recommended steps
 - (Optional) Create and activate a virtualenv.
 - Install Python dependencies:
   - `pip install PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng yt-dlp`
-  - Optional (build tooling): `pip install pyinstaller`
 - Run the app from the repo root:
   - `python app/main.py`
 
