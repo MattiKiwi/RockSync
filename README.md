@@ -35,6 +35,7 @@ Settings live in `app/settings.json`. Logs are written to `app/latest.log` and `
 - Rockbox Tools: Detect devices, manage `.cfg` under `/.rockbox`, browse/install themes from themes.rockbox.org per target.
 - Tasks (Advanced): Run helper scripts below with arguments via a simple form; see output inline.
 - Themes: Switch between bundled UI themes under `app/themes` or use system default.
+- YouTube: Browse YouTube (search, playlists, Watch Later, Liked, Home) and download via yt‑dlp with cookies support. See “YouTube (Browse + Download)” below.
 
 ## First Run & Usage
 
@@ -49,6 +50,7 @@ Settings live in `app/settings.json`. Logs are written to `app/latest.log` and `
 ## Python Dependencies
 
 - Core GUI: `PySide6`
+- YouTube: `yt-dlp`
 - Metadata & tagging: `mutagen`
 - Images (previews, resizing): `Pillow`
 - Rockbox detection: `psutil`
@@ -61,6 +63,46 @@ System tools required by some features/scripts:
 - `ffmpeg` and `ffprobe` on PATH (conversions, downsampling)
 
 The app degrades gracefully: missing deps disable related features with a helpful note.
+
+## YouTube (Browse + Download)
+
+RockSync includes a YouTube browser and downloader powered by yt‑dlp. You can use it from the GUI (YouTube tab) or via the scripts directly.
+
+- Browse (no downloads): `scripts/yt_browse.py`
+  - Subcommands: `search`, `playlist`, `watchlater`, `liked`, `myplaylists`, `subs`, `home` (the latter set require cookies)
+  - Fast paging with flat extraction; optional metadata enrichment for channel names and thumbnails
+  - Table or JSON Lines output; selectable columns
+  - Lightweight on-disk cache for public search/playlists to speed repeat queries
+  - Cookies: pass `--cookies-from-browser <firefox|chrome|edge|brave>` or `--cookies-file /path/to/cookies.txt` for private feeds
+  - Examples:
+    - Search with selected columns: `python3 scripts/yt_browse.py search "pink floyd time" --columns title,channel,duration,url`
+    - Playlist page 2 (items 26–50): `python3 scripts/yt_browse.py playlist https://www.youtube.com/playlist?list=XXXX --start 26 --limit 25`
+    - Fast repeat using cache: `python3 scripts/yt_browse.py search "ambient mix" --cache-ttl 1800 --no-enrich`
+  - Helpful flags:
+    - `--columns` choose from: `title,channel,url,duration,date,id,thumbnail`
+    - `--no-enrich` skip quick oEmbed lookups (fastest)
+    - `--format table|jsonl` output format
+    - `--cache-ttl <secs>` cache TTL for public search/playlist (default 900; 0 disables)
+    - `--no-cache` disable cache for the run
+
+- Download: `scripts/yt_download.py`
+  - Destination folder (`--dest`) is required
+  - Presets: `--preset audio-m4a | audio-flac | video-mp4`
+  - Profiles: refer to profiles in `app/settings.json` (`youtube_profiles`) via `--profile-name <name>`
+  - Raw yt‑dlp args: append with `--args "..."` (overrides conflicting preset/profile options)
+  - Cookies: `--cookies-from-browser <browser>` or `--cookies-file <path>` supported
+  - ffmpeg: ensure `ffmpeg`/`ffprobe` are installed and on PATH for audio extraction/format merging
+  - Examples:
+    - Best audio (M4A): `python3 scripts/yt_download.py --dest "~/Music/YouTube" --preset audio-m4a https://youtu.be/ID1 https://youtu.be/ID2`
+    - Use a saved profile: `python3 scripts/yt_download.py --dest "~/Music/YouTube" --profile-name "My FLAC" https://www.youtube.com/playlist?list=XXXX`
+
+- GUI: YouTube tab (`app/ui/youtube_pane.py`)
+  - Search or open a playlist URL and scroll to load more; thumbnails, titles, channel and duration are shown
+  - Enable “Use browser cookies” + choose a browser or point to a `cookies.txt` file to access private feeds (Home, Watch Later, Liked, My Playlists)
+  - Choose a download destination and a preset/profile, then “Download Selected” for the checked items
+
+Install the dependency:
+- `pip install yt-dlp`
 
 ## TIDAL Integration (Optional)
 
@@ -112,3 +154,7 @@ Notes and Disclaimers
 —
 
 If you want help wiring additional scripts into the GUI, see `app/tasks_registry.py` for examples.
+
+## Building
+
+- See `BUILD.md` for detailed, cross‑platform build instructions using PyInstaller, including the provided spec file and CI setup.

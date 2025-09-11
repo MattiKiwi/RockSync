@@ -3,6 +3,8 @@ import os
 import shlex
 import sys
 from typing import Any, Dict, List, Optional
+import tempfile
+import shutil
 
 from PySide6.QtCore import Qt, QTimer, QProcess, QUrl, QSize, QEvent
 from PySide6.QtGui import QPixmap
@@ -10,12 +12,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QListWidget, QListWidgetItem, QSpinBox, QFileDialog, QGroupBox,
     QCheckBox, QMessageBox, QDialog, QFormLayout, QAbstractItemView, QPlainTextEdit,
-    QScroller, QScrollerProperties
+    QScroller, QScrollerProperties, QToolButton
 )
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
 from core import ROOT, SCRIPTS_DIR
 from settings_store import load_settings, save_settings
+from ui.explorer_pane import ImportDialog
 import json
 import re
 import subprocess
@@ -44,6 +47,9 @@ class YouTubePane(QWidget):
         self._next_start: int = 1
         self._loading_more: bool = False
         self._seen_urls: set[str] = set()
+        self._selected_urls: set[str] = set()
+        self._url_to_card_button: Dict[str, QPushButton] = {}
+        self._post_download: Optional[Dict[str, Any]] = None
         self._build_ui()
         self._load_profiles()
 
@@ -117,7 +123,41 @@ class YouTubePane(QWidget):
             self.list.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
         except Exception:
             pass
+
+        # Selected videos section (collapsible)
+        self.sel_toggle = QToolButton()
+        self.sel_toggle.setText("Selected Videos")
+        self.sel_toggle.setCheckable(True)
+        self.sel_toggle.setChecked(True)
+        self.sel_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.sel_toggle.setArrowType(Qt.DownArrow)
+
+        self.sel_container = QWidget()
+        sel_layout = QVBoxLayout(self.sel_container)
+        sel_layout.setContentsMargins(9, 0, 9, 9)
+        # Manual URL add row
+        manual_row = QHBoxLayout()
+        self.manual_url = QLineEdit(); self.manual_url.setPlaceholderText("Paste a YouTube video or playlist URL…")
+        btn_add_url = QPushButton("Add URL")
+        manual_row.addWidget(self.manual_url, 1)
+        manual_row.addWidget(btn_add_url)
+        sel_layout.addLayout(manual_row)
+        self.selected_list = QListWidget()
+        self.selected_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.selected_list.setMaximumHeight(140)
+        sel_layout.addWidget(self.selected_list)
+        sel_btns = QHBoxLayout()
+        self.btn_remove_sel = QPushButton("Remove Selected")
+        self.btn_clear_sel = QPushButton("Clear")
+        sel_btns.addWidget(self.btn_remove_sel)
+        sel_btns.addWidget(self.btn_clear_sel)
+        sel_btns.addStretch(1)
+        sel_layout.addLayout(sel_btns)
+
+        # Layout: results above, then collapsible header + content
         root.addWidget(self.list, 1)
+        root.addWidget(self.sel_toggle)
+        root.addWidget(self.sel_container)
 
         # Kinetic (inertial) scrolling with smooth per-pixel deltas and no snapping
         try:
@@ -143,11 +183,7 @@ class YouTubePane(QWidget):
         # Download controls
         dl_group = QGroupBox("Download")
         dl = QHBoxLayout(dl_group)
-        dl.addWidget(QLabel("Destination:"))
-        self.dest_edit = QLineEdit(self.settings.get('youtube_default_dest', self.controller.settings.get('music_root', '')))
-        dl.addWidget(self.dest_edit, 1)
-        b_dest = QPushButton("Browse"); b_dest.clicked.connect(self._browse_dest)
-        dl.addWidget(b_dest)
+        # Destination input removed; will ask on download
         dl.addSpacing(12)
         dl.addWidget(QLabel("Profile/Preset:"))
         self.profile_combo = QComboBox(); self.profile_combo.setMinimumWidth(220)
@@ -159,6 +195,9 @@ class YouTubePane(QWidget):
         self.btn_download.setProperty("accent", True)
         self.btn_download.clicked.connect(self.on_download_selected)
         dl.addWidget(self.btn_download)
+        self.btn_download_import = QPushButton("Download && Import…")
+        self.btn_download_import.clicked.connect(self.on_download_and_import)
+        dl.addWidget(self.btn_download_import)
         root.addWidget(dl_group)
 
         # Status
@@ -172,6 +211,12 @@ class YouTubePane(QWidget):
         self._net = QNetworkAccessManager(self)
         # Initial layout sizing
         QTimer.singleShot(0, self._recompute_grid)
+
+        # Wire selected list controls
+        self.btn_remove_sel.clicked.connect(self._remove_selected_from_queue)
+        self.btn_clear_sel.clicked.connect(self._clear_selected_queue)
+        self.sel_toggle.toggled.connect(self._toggle_selected_section)
+        btn_add_url.clicked.connect(self._add_manual_url)
 
     def eventFilter(self, obj, ev):
         if obj is self.list and ev.type() in (QEvent.Resize, QEvent.Show, QEvent.LayoutRequest):
@@ -225,10 +270,7 @@ class YouTubePane(QWidget):
         if path:
             self.cookies_path.setText(path)
 
-    def _browse_dest(self):
-        path = QFileDialog.getExistingDirectory(self, "Select download folder", self.dest_edit.text() or str(ROOT))
-        if path:
-            self.dest_edit.setText(path)
+    # Destination is chosen at download time via dialog now
 
     def _set_status(self, text: str):
         self.status.setText(text)
@@ -246,10 +288,41 @@ class YouTubePane(QWidget):
     def _make_card_widget(self, data: Dict[str, Any]) -> QWidget:
         card = QWidget(); card.setObjectName("VideoCard")
         v = QVBoxLayout(card); v.setContentsMargins(6, 6, 6, 6); v.setSpacing(6)
-        # Thumbnail
-        thumb = QLabel(); thumb.setObjectName("VideoThumb"); thumb.setFixedSize(self._thumb_size); thumb.setAlignment(Qt.AlignCenter)
+        # Thumbnail with big plus overlay
+        thumb_container = QWidget(card)
+        thumb_layout = QVBoxLayout(thumb_container)
+        thumb_layout.setContentsMargins(0, 0, 0, 0)
+        thumb_layout.setSpacing(0)
+        thumb = QLabel(thumb_container); thumb.setObjectName("VideoThumb"); thumb.setFixedSize(self._thumb_size); thumb.setAlignment(Qt.AlignCenter)
         thumb.setStyleSheet("background:#222; border-radius:4px;")
-        v.addWidget(thumb)
+        thumb_layout.addWidget(thumb)
+        # Big '+' overlay button centered
+        plus_btn = QPushButton("+", thumb_container)
+        plus_btn.setCheckable(True)
+        plus_btn.setCursor(Qt.PointingHandCursor)
+        plus_btn.setToolTip("Add to download list")
+        # Visual prominence
+        plus_btn.setStyleSheet(
+            "QPushButton { font-size: 36px; font-weight: 800; color: white;"
+            " background-color: rgba(0,0,0,140); border: 2px solid rgba(255,255,255,180);"
+            " border-radius: 28px; padding: 6px; }"
+            "QPushButton:checked { background-color: rgba(46, 204, 113, 210); border-color: rgba(255,255,255,220); }"
+        )
+        # Position overlay by placing it after thumb in same layout cell using manual geometry on resize
+        def _position_plus():
+            try:
+                # Center over the thumbnail area
+                tw, th = thumb.width(), thumb.height()
+                bw, bh = 56, 56
+                x = max(0, (tw - bw) // 2)
+                y = max(0, (th - bh) // 2)
+                plus_btn.setGeometry(x, y, bw, bh)
+                plus_btn.raise_()
+            except Exception:
+                pass
+        _position_plus()
+        thumb_container.resizeEvent = lambda ev: (_position_plus())
+        v.addWidget(thumb_container)
         # Title
         title = QLabel(str(data.get('title') or ''))
         title.setWordWrap(True)
@@ -279,7 +352,77 @@ class YouTubePane(QWidget):
                 reply.finished.connect(_on_done)
             except Exception:
                 pass
+        # Hook overlay button logic
+        url = str(data.get('url') or '')
+        if url:
+            # sync state if already in selected queue
+            plus_btn.setChecked(url in self._selected_urls)
+            self._url_to_card_button[url] = plus_btn
+
+            def on_toggle(checked: bool):
+                if checked:
+                    self._queue_add(data)
+                else:
+                    self._queue_remove(url)
+            plus_btn.toggled.connect(on_toggle)
+
         return card
+
+    # ---------- Selected queue management ----------
+    def _queue_add(self, data: Dict[str, Any]):
+        url = str(data.get('url') or '').strip()
+        if not url or url in self._selected_urls:
+            return
+        self._selected_urls.add(url)
+        it = QListWidgetItem(str(data.get('title') or url))
+        it.setData(Qt.UserRole, data)
+        self.selected_list.addItem(it)
+
+    def _queue_remove(self, url: str):
+        u = (url or '').strip()
+        if not u:
+            return
+        # Remove from set and list widget
+        if u in self._selected_urls:
+            self._selected_urls.remove(u)
+        # Update overlay button if present
+        btn = self._url_to_card_button.get(u)
+        if btn and btn.isChecked():
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(False)
+            finally:
+                btn.blockSignals(False)
+        # Remove items from the selected list
+        i = 0
+        while i < self.selected_list.count():
+            it = self.selected_list.item(i)
+            d = it.data(Qt.UserRole) or {}
+            if str(d.get('url') or '') == u:
+                self.selected_list.takeItem(i)
+                continue
+            i += 1
+
+    def _remove_selected_from_queue(self):
+        items = self.selected_list.selectedItems()
+        if not items:
+            return
+        for it in items:
+            d = it.data(Qt.UserRole) or {}
+            self._queue_remove(str(d.get('url') or ''))
+
+    def _clear_selected_queue(self):
+        # Clear all and uncheck overlays
+        urls = list(self._selected_urls)
+        for u in urls:
+            self._queue_remove(u)
+
+    def _toggle_selected_section(self, expanded: bool):
+        try:
+            self.sel_container.setVisible(bool(expanded))
+            self.sel_toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        except Exception:
+            pass
 
     def _load_profiles(self):
         # Ensure default presets exist in settings (non-destructive merge by name)
@@ -702,12 +845,13 @@ class YouTubePane(QWidget):
             pass
 
     def on_download_selected(self):
-        items = self.list.selectedItems()
-        if not items:
-            QMessageBox.information(self, "YouTube", "Select one or more videos to download.")
+        # Use the selected queue (small list)
+        if self.selected_list.count() <= 0:
+            QMessageBox.information(self, "YouTube", "No videos queued. Click + on videos to add.")
             return
-        urls = []
-        for it in items:
+        urls: List[str] = []
+        for i in range(self.selected_list.count()):
+            it = self.selected_list.item(i)
             d = it.data(Qt.UserRole) or {}
             u = str((d.get('url') or '')).strip()
             if u:
@@ -715,10 +859,16 @@ class YouTubePane(QWidget):
         if not urls:
             QMessageBox.warning(self, "YouTube", "No URLs found in the selected rows.")
             return
-        dest = (self.dest_edit.text() or '').strip() or self.controller.settings.get('music_root', '')
+
+        # Ask user for destination each time (starting in last used or music root)
+        start_dir = (self.settings.get('youtube_default_dest')
+                     or self.controller.settings.get('music_root', '')
+                     or str(ROOT))
+        dest = QFileDialog.getExistingDirectory(self, "Select download folder", start_dir)
         if not dest:
-            QMessageBox.warning(self, "YouTube", "Set a download destination.")
+            # User canceled
             return
+
         prof = self.profile_combo.currentData()
         args_str = ''
         if isinstance(prof, dict):
@@ -726,7 +876,7 @@ class YouTubePane(QWidget):
             # remember selection
             patch = {
                 'youtube_last_profile': prof.get('name'),
-                'youtube_default_dest': dest,
+                'youtube_default_dest': dest,  # remember last for next start dir
                 'youtube_use_cookies': bool(self.cookies_cb.isChecked()),
                 'youtube_cookie_browser': self.browser_combo.currentText(),
                 'youtube_cookie_file': self.cookies_path.text(),
@@ -758,7 +908,86 @@ class YouTubePane(QWidget):
             parts.append(shlex.quote(u))
         cmd = " ".join(parts)
         # Launch process
+        self._post_download = None
         self._start_process(cmd)
+
+    def on_download_and_import(self):
+        # Gather URLs
+        if self.selected_list.count() <= 0:
+            QMessageBox.information(self, "YouTube", "No videos queued. Click + on videos to add.")
+            return
+        urls: List[str] = []
+        for i in range(self.selected_list.count()):
+            it = self.selected_list.item(i)
+            d = it.data(Qt.UserRole) or {}
+            u = str((d.get('url') or '')).strip()
+            if u:
+                urls.append(u)
+        if not urls:
+            QMessageBox.warning(self, "YouTube", "No URLs found in the selected rows.")
+            return
+        # Create temp directory for download
+        tmpdir = tempfile.mkdtemp(prefix='rocksync_ytdl_')
+
+        prof = self.profile_combo.currentData()
+        args_str = ''
+        if isinstance(prof, dict):
+            args_str = prof.get('args', '') or ''
+            patch = {
+                'youtube_last_profile': prof.get('name'),
+                'youtube_use_cookies': bool(self.cookies_cb.isChecked()),
+                'youtube_cookie_browser': self.browser_combo.currentText(),
+                'youtube_cookie_file': self.cookies_path.text(),
+            }
+            self.settings.update(patch)
+            save_settings(patch)
+
+        py = shlex.quote(sys.executable)
+        script = shlex.quote(str(SCRIPTS_DIR / 'yt_download.py'))
+        parts = [py, '-u', script, '--dest', shlex.quote(tmpdir)]
+        try:
+            ffmpeg_path = (self.controller.settings.get('ffmpeg_path') or '').strip()
+        except Exception:
+            ffmpeg_path = (self.settings.get('ffmpeg_path') or '').strip()
+        if ffmpeg_path and ('--ffmpeg-location' not in (args_str or '')):
+            parts.extend(['--ffmpeg-location', shlex.quote(ffmpeg_path)])
+        if args_str:
+            parts.extend(['--args', shlex.quote(args_str)])
+        cargs = self._cookie_args()
+        if cargs.get('cookies_file'):
+            parts.extend(['--cookies-file', shlex.quote(str(cargs['cookies_file']))])
+        elif cargs.get('cookies_from_browser'):
+            parts.extend(['--cookies-from-browser', shlex.quote(str(cargs['cookies_from_browser']))])
+        for u in urls:
+            parts.append(shlex.quote(u))
+        cmd = " ".join(parts)
+        # Record post action and start
+        self._post_download = { 'kind': 'import', 'tmpdir': tmpdir }
+        self._start_process(cmd)
+
+    def _add_manual_url(self):
+        url = (self.manual_url.text() or '').strip()
+        if not url:
+            return
+        # Basic validation: require URL scheme and host
+        if not (url.startswith('http://') or url.startswith('https://')):
+            QMessageBox.warning(self, 'Add URL', 'Please enter a valid video or playlist URL (http/https).')
+            return
+        # Avoid duplicates
+        if url in self._selected_urls:
+            QMessageBox.information(self, 'Add URL', 'This URL is already in the selected list.')
+            return
+        # Add minimal metadata; downloader handles both video and playlist URLs
+        data = {
+            'url': url,
+            'title': url,
+            'channel': '',
+            'duration': '',
+            'upload_date': '',
+            'thumbnail': '',
+        }
+        self._queue_add(data)
+        self.manual_url.clear()
 
     # ---------- Process handling ----------
     def _start_process(self, cmd: str):
@@ -772,7 +1001,7 @@ class YouTubePane(QWidget):
         self.proc.setWorkingDirectory(str(ROOT))
         self.proc.setProcessChannelMode(QProcess.MergedChannels)
         self.proc.readyReadStandardOutput.connect(lambda: self._append_status(bytes(self.proc.readAllStandardOutput()).decode('utf-8', errors='ignore')))
-        self.proc.finished.connect(lambda rc, _s: self._append_status(f"\n[Downloader exit {rc}]\n"))
+        self.proc.finished.connect(self._on_downloader_finished)
         self._set_status("Starting download…")
         self.proc.start("/bin/sh", ["-c", cmd])
 
@@ -781,3 +1010,146 @@ class YouTubePane(QWidget):
         t = (self.status.text() or '')
         t = (t + "\n" + text).splitlines()[-6:]
         self.status.setText("\n".join(t))
+
+    def _on_downloader_finished(self, rc: int, _status):
+        try:
+            self._append_status(f"\n[Downloader exit {rc}]\n")
+            if int(rc) == 0:
+                # Clear queue on success
+                self._clear_selected_queue()
+                # If an import is pending, run it
+                if self._post_download and self._post_download.get('kind') == 'import':
+                    tmp = self._post_download.get('tmpdir')
+                    self._post_download = None
+                    if tmp and os.path.isdir(tmp):
+                        self._do_import_from_temp(tmp)
+            else:
+                # Clean up temp dir if any pending import
+                if self._post_download and self._post_download.get('kind') == 'import':
+                    tmp = self._post_download.get('tmpdir')
+                    self._post_download = None
+                    try:
+                        if tmp and os.path.isdir(tmp):
+                            shutil.rmtree(tmp)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # ---------- Import integration ----------
+    def _do_import_from_temp(self, tmpdir: str):
+        try:
+            files = self._collect_audio_files(tmpdir)
+            if not files:
+                QMessageBox.information(self, "Import", "No audio files were downloaded.")
+                try:
+                    shutil.rmtree(tmpdir)
+                except Exception:
+                    pass
+                return
+            # Open Import dialog with preloaded files
+            dlg = ImportDialog(self)
+            dlg.files = files
+            try:
+                dlg.files_edit.setText(f"{len(files)} file(s) selected")
+            except Exception:
+                pass
+            if dlg.exec() != QDialog.Accepted:
+                try:
+                    shutil.rmtree(tmpdir)
+                except Exception:
+                    pass
+                return
+            params = dlg.get_values()
+            music_root = self.controller.settings.get('music_root', '')
+            if not music_root:
+                QMessageBox.warning(self, "Import", "Set your Music Root in Settings first.")
+                return
+            os.makedirs(music_root, exist_ok=True)
+            # Modes copied from Explorer import logic
+            if params['mode'] == 'Album':
+                artist, album = params.get('artist',''), params.get('album','')
+                if not artist or not album:
+                    # Try simple inference from first file
+                    a, al = self._extract_artist_album(files[0])
+                    artist = artist or a
+                    album = album or al
+                base = os.path.join(music_root, 'Albums', self._safe_part(artist), self._safe_part(album))
+                os.makedirs(base, exist_ok=True)
+                # Copy and split into album folder
+                copied = self._copy_files(files, base)
+                if copied:
+                    QMessageBox.information(self, "Import Complete", f"Imported {len(copied)} files to\n{base}")
+            elif params['mode'] == 'Playlist':
+                name = params.get('playlist', '').strip()
+                sub = params.get('subfolder', '').strip()
+                base = os.path.join(music_root, 'Playlists')
+                dest_dir = os.path.join(base, sub, name) if sub else os.path.join(base, name)
+                os.makedirs(dest_dir, exist_ok=True)
+                copied = self._copy_files(files, dest_dir)
+                QMessageBox.information(self, "Import Complete", f"Imported {len(copied)} files to\n{dest_dir}")
+            else:
+                dest = os.path.join(music_root, 'Tracks')
+                os.makedirs(dest, exist_ok=True)
+                copied = self._copy_files(files, dest)
+                QMessageBox.information(self, "Import Complete", f"Imported {len(copied)} files to\n{dest}")
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import: {e}")
+        finally:
+            try:
+                shutil.rmtree(tmpdir)
+            except Exception:
+                pass
+
+    def _collect_audio_files(self, root_dir: str) -> List[str]:
+        exts = {'.flac','.mp3','.m4a','.alac','.aac','.ogg','.opus','.wav'}
+        out: List[str] = []
+        for base, _dirs, fnames in os.walk(root_dir):
+            for fn in fnames:
+                try:
+                    if os.path.splitext(fn)[1].lower() in exts:
+                        out.append(os.path.join(base, fn))
+                except Exception:
+                    continue
+        return out
+
+    def _copy_files(self, files: List[str], dest_dir: str) -> List[str]:
+        copied: List[str] = []
+        for src in files:
+            try:
+                base = os.path.basename(src)
+                name, ext = os.path.splitext(base)
+                target = os.path.join(dest_dir, base)
+                i = 1
+                while os.path.exists(target):
+                    target = os.path.join(dest_dir, f"{name}_{i}{ext}")
+                    i += 1
+                shutil.copy2(src, target)
+                copied.append(target)
+            except Exception:
+                continue
+        return copied
+
+    def _safe_part(self, name: str) -> str:
+        bad = ['/', '\\', ':']
+        s = (name or '').strip() or 'Unknown'
+        for b in bad:
+            s = s.replace(b, '_')
+        return s
+
+    def _extract_artist_album(self, file_path: str):
+        try:
+            from mutagen import File as MFile
+            easy = MFile(file_path, easy=True)
+            tags = getattr(easy, 'tags', None) or {}
+            def pick(v):
+                if isinstance(v, list) and v:
+                    return str(v[0]).strip()
+                if isinstance(v, str):
+                    return v.strip()
+                return ''
+            artist = pick(tags.get('albumartist')) or pick(tags.get('artist'))
+            album = pick(tags.get('album'))
+            return artist, album
+        except Exception:
+            return '', ''
