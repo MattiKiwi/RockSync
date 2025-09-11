@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse, sys, textwrap, json
+import time, os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from yt_dlp import YoutubeDL
 import concurrent.futures
@@ -81,6 +83,72 @@ def emit_rows(rows: List[Dict[str, Any]], cols: List[Tuple[str, str]], fmt: str 
     print(sep)
     for r in rows:
         print(" | ".join(str(r.get(f, "")).ljust(w) for (f, h), w in zip(cols, widths)))
+
+
+# ---------- Lightweight cache ----------
+def _cache_path() -> Path:
+    base = os.environ.get('XDG_CACHE_HOME') or os.path.join(Path.home(), '.cache')
+    p = Path(base) / 'rocksync'
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return p / 'yt_browse_cache.json'
+
+def _cache_load() -> Dict[str, Any]:
+    p = _cache_path()
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        return {}
+    return {}
+
+def _cache_save(data: Dict[str, Any]) -> None:
+    p = _cache_path()
+    tmp = str(p) + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+def _cache_key(kind: str, **kwargs: Any) -> str:
+    # Stable serialization for keying cached rows
+    items = sorted(kwargs.items())
+    return kind + '|' + json.dumps(items, separators=(',', ':'), ensure_ascii=False)
+
+def _cache_get(kind: str, ttl_sec: int, **kwargs: Any) -> Optional[List[Dict[str, Any]]]:
+    try:
+        data = _cache_load()
+        key = _cache_key(kind, **kwargs)
+        rec = data.get(key)
+        if not isinstance(rec, dict):
+            return None
+        ts = rec.get('ts')
+        rows = rec.get('rows')
+        if not isinstance(ts, (int, float)) or not isinstance(rows, list):
+            return None
+        if ttl_sec > 0 and (time.time() - float(ts)) > float(ttl_sec):
+            return None
+        # Basic validation
+        if all(isinstance(r, dict) for r in rows):
+            return rows  # type: ignore
+        return None
+    except Exception:
+        return None
+
+def _cache_put(kind: str, rows: List[Dict[str, Any]], **kwargs: Any) -> None:
+    try:
+        data = _cache_load()
+    except Exception:
+        data = {}
+    key = _cache_key(kind, **kwargs)
+    data[key] = {'ts': time.time(), 'rows': rows}
+    _cache_save(data)
 
 def extract_entries(url: str, ydl: YoutubeDL, limit: int) -> List[Dict[str, Any]]:
     """
@@ -244,6 +312,26 @@ def normalize(e: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 # ---------- Commands ----------
+def _columns_from_arg(col_arg: Optional[str]) -> List[Tuple[str, str]]:
+    # Map user-friendly names to fields
+    mapping = {
+        'title': ('title', 'Title'),
+        'channel': ('channel', 'Channel'),
+        'url': ('url', 'URL'),
+        'duration': ('duration', 'Duration'),
+        'date': ('upload_date', 'Date'),
+        'id': ('id', 'ID'),
+        'thumb': ('thumbnail', 'Thumbnail'),
+        'thumbnail': ('thumbnail', 'Thumbnail'),
+    }
+    cols: List[Tuple[str, str]] = []
+    if not col_arg:
+        return [('title', 'Title'), ('channel', 'Channel'), ('url', 'URL')]
+    for token in (c.strip().lower() for c in col_arg.split(',') if c.strip()):
+        if token in mapping:
+            cols.append(mapping[token])
+    return cols or [('title', 'Title'), ('channel', 'Channel'), ('url', 'URL')]
+
 def cmd_search(args):
     # Compute paging window
     start = int(getattr(args, 'start', 1) or 1)
@@ -252,30 +340,65 @@ def cmd_search(args):
     end = start + int(args.limit) - 1
     # ytsearchN must be large enough to include the requested window
     n = end
-    with make_ydl(flat=True, verbose=args.verbose, playlist_limit=None,
-                  playlist_start=start, playlist_end=end) as ydl:
-        url = f"ytsearch{n}:{args.query}"
-        ents = extract_entries(url, ydl, args.limit)
-        rows = [normalize(e) for e in ents]
-        _enrich_missing_metadata(rows, verbose=args.verbose)
-        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
+    # Try cache for public search (no cookies)
+    rows: List[Dict[str, Any]]
+    cache_ttl = 0 if getattr(args, 'no_cache', False) else int(getattr(args, 'cache_ttl', 0) or 0)
+    cache_key_args = {
+        'query': args.query,
+        'start': start,
+        'end': end,
+        'limit': int(args.limit),
+        'fmt': getattr(args, 'format', 'table'),
+    }
+    cached = _cache_get('search', cache_ttl, **cache_key_args) if cache_ttl > 0 else None
+    if cached is not None:
+        rows = cached
+    else:
+        with make_ydl(flat=True, verbose=args.verbose, playlist_limit=None,
+                      playlist_start=start, playlist_end=end) as ydl:
+            url = f"ytsearch{n}:{args.query}"
+            ents = extract_entries(url, ydl, args.limit)
+            rows = [normalize(e) for e in ents]
+        if not getattr(args, 'no_enrich', False):
+            _enrich_missing_metadata(rows, verbose=args.verbose)
+        if cache_ttl > 0:
+            _cache_put('search', rows, **cache_key_args)
+    emit_rows(rows, _columns_from_arg(getattr(args, 'columns', None)), getattr(args, 'format', 'table'))
 
 def cmd_playlist(args):
     start = int(getattr(args, 'start', 1) or 1)
     if start < 1:
         start = 1
     end = start + int(args.limit) - 1
-    with make_ydl(cookies_from_browser=getattr(args, 'cookies_from_browser', None),
-                  cookies_file=getattr(args, 'cookies_file', None),
-                  flat=True, verbose=args.verbose, playlist_start=start, playlist_end=end) as ydl:
-        url = args.url
-        ents = extract_entries(url, ydl, args.limit)
-        rows = [normalize(e) for e in ents]
-        _enrich_missing_metadata(rows,
-                                 cookies_from_browser=getattr(args, 'cookies_from_browser', None),
-                                 cookies_file=getattr(args, 'cookies_file', None),
-                                 verbose=args.verbose)
-        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
+    # Allow caching for public/unauthed playlist URLs. If cookies provided, skip cache by default.
+    rows: List[Dict[str, Any]]
+    has_cookies = bool(getattr(args, 'cookies_from_browser', None) or getattr(args, 'cookies_file', None))
+    cache_ttl = 0 if (getattr(args, 'no_cache', False) or has_cookies) else int(getattr(args, 'cache_ttl', 0) or 0)
+    cache_key_args = {
+        'url': args.url,
+        'start': start,
+        'end': end,
+        'limit': int(args.limit),
+        'fmt': getattr(args, 'format', 'table'),
+    }
+    cached = _cache_get('playlist', cache_ttl, **cache_key_args) if cache_ttl > 0 else None
+    if cached is not None:
+        rows = cached
+    else:
+        with make_ydl(cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                      cookies_file=getattr(args, 'cookies_file', None),
+                      flat=True, verbose=args.verbose, playlist_start=start, playlist_end=end) as ydl:
+            url = args.url
+            ents = extract_entries(url, ydl, args.limit)
+            rows = [normalize(e) for e in ents]
+        if not getattr(args, 'no_enrich', False):
+            _enrich_missing_metadata(rows,
+                                     cookies_from_browser=getattr(args, 'cookies_from_browser', None),
+                                     cookies_file=getattr(args, 'cookies_file', None),
+                                     verbose=args.verbose)
+        if cache_ttl > 0:
+            _cache_put('playlist', rows, **cache_key_args)
+    emit_rows(rows, _columns_from_arg(getattr(args, 'columns', None)), getattr(args, 'format', 'table'))
 
 def _authed_ydl(args) -> YoutubeDL:
     if not (args.cookies_from_browser or args.cookies_file):
@@ -295,21 +418,23 @@ def cmd_watch_later(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/playlist?list=WL", ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        _enrich_missing_metadata(rows,
+        if not getattr(args, 'no_enrich', False):
+            _enrich_missing_metadata(rows,
                                  cookies_from_browser=getattr(args, 'cookies_from_browser', None),
                                  cookies_file=getattr(args, 'cookies_file', None),
                                  verbose=args.verbose)
-        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
+        emit_rows(rows, _columns_from_arg(getattr(args, 'columns', None)), getattr(args, 'format', 'table'))
 
 def cmd_liked(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/playlist?list=LL", ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        _enrich_missing_metadata(rows,
+        if not getattr(args, 'no_enrich', False):
+            _enrich_missing_metadata(rows,
                                  cookies_from_browser=getattr(args, 'cookies_from_browser', None),
                                  cookies_file=getattr(args, 'cookies_file', None),
                                  verbose=args.verbose)
-        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
+        emit_rows(rows, _columns_from_arg(getattr(args, 'columns', None)), getattr(args, 'format', 'table'))
 
 def cmd_my_playlists(args):
     with _authed_ydl(args) as ydl:
@@ -320,21 +445,27 @@ def cmd_my_playlists(args):
             ne = normalize(e)
             ne["url"] = e.get("webpage_url") or e.get("url") or ne["url"]
             rows.append(ne)
-        _enrich_missing_metadata(rows,
+        if not getattr(args, 'no_enrich', False):
+            _enrich_missing_metadata(rows,
                                  cookies_from_browser=getattr(args, 'cookies_from_browser', None),
                                  cookies_file=getattr(args, 'cookies_file', None),
                                  verbose=args.verbose)
-        emit_rows(rows, [("title", "Playlist"), ("channel", "Owner/Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
+        # For playlists view, default columns differ a bit
+        cols = _columns_from_arg(getattr(args, 'columns', None))
+        if not getattr(args, 'columns', None):
+            cols = [("title", "Playlist"), ("channel", "Owner/Channel"), ("url", "URL")]
+        emit_rows(rows, cols, getattr(args, 'format', 'table'))
 
 def cmd_subscriptions(args):
     with _authed_ydl(args) as ydl:
         ents = extract_entries("https://www.youtube.com/feed/channels", ydl, args.limit)
         rows = [normalize(e) for e in ents]
-        _enrich_missing_metadata(rows,
+        if not getattr(args, 'no_enrich', False):
+            _enrich_missing_metadata(rows,
                                  cookies_from_browser=getattr(args, 'cookies_from_browser', None),
                                  cookies_file=getattr(args, 'cookies_file', None),
                                  verbose=args.verbose)
-        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
+        emit_rows(rows, _columns_from_arg(getattr(args, 'columns', None)), getattr(args, 'format', 'table'))
 
 def cmd_home(args):
     with _authed_ydl(args) as ydl:
@@ -376,11 +507,12 @@ def cmd_home(args):
                 "Try 'subs', 'watchlater', or 'liked' instead, or update yt-dlp."
             )
         rows = [normalize(e) for e in ents]
-        _enrich_missing_metadata(rows,
+        if not getattr(args, 'no_enrich', False):
+            _enrich_missing_metadata(rows,
                                  cookies_from_browser=getattr(args, 'cookies_from_browser', None),
                                  cookies_file=getattr(args, 'cookies_file', None),
                                  verbose=args.verbose)
-        emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
+        emit_rows(rows, _columns_from_arg(getattr(args, 'columns', None)), getattr(args, 'format', 'table'))
 
 # ---------- Main ----------
 def main():
@@ -391,6 +523,10 @@ def main():
     )
     p.add_argument("--verbose", action="store_true", help="Verbose yt-dlp output")
     p.add_argument("--format", choices=["table","jsonl"], default="table", help="Output format")
+    p.add_argument("--columns", help="Comma-separated columns: title,channel,url,duration,date,id,thumbnail")
+    p.add_argument("--no-enrich", action="store_true", help="Skip fast oEmbed enrichment for missing channel names")
+    p.add_argument("--cache-ttl", type=int, default=900, help="Cache TTL in seconds for public search/playlist results (0 disables)")
+    p.add_argument("--no-cache", action="store_true", help="Disable cache for this run")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("search", help="Search public videos")
