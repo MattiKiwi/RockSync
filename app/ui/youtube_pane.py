@@ -37,6 +37,13 @@ class YouTubePane(QWidget):
         self.controller = controller
         self.proc: Optional[QProcess] = None
         self.settings = load_settings()
+        # Browse pagination state
+        self._browse_kind: Optional[str] = None  # 'search'|'playlist'|'home'|'watchlater'|'liked'|'myplaylists'|'subs'
+        self._browse_params: Dict[str, Any] = {}
+        self._page_size: int = 25
+        self._next_start: int = 1
+        self._loading_more: bool = False
+        self._seen_urls: set[str] = set()
         self._build_ui()
         self._load_profiles()
 
@@ -105,6 +112,11 @@ class YouTubePane(QWidget):
         self._thumb_size = QSize(320, 180)
         self._card_size = QSize(self._thumb_size.width() + 16, self._thumb_size.height() + 80)
         self.list.installEventFilter(self)
+        try:
+            # Detect near-bottom scrolling and auto-load next page
+            self.list.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
+        except Exception:
+            pass
         root.addWidget(self.list, 1)
 
         # Kinetic (inertial) scrolling with smooth per-pixel deltas and no snapping
@@ -543,30 +555,22 @@ class YouTubePane(QWidget):
         q = (self.search_edit.text() or '').strip()
         if not q:
             return
-        lim = int(self.limit_spin.value())
-        args = ["search", q, "--limit", str(lim)]
-        self._run_browse(args)
+        self._begin_browse('search', {'query': q})
 
     def on_open_playlist(self):
         url = (self.playlist_edit.text() or '').strip()
         if not url:
             return
-        lim = int(self.limit_spin.value())
-        args = ["playlist", url, "--limit", str(lim)]
-        # playlist may need cookies for private playlists
+        # Save cookies context in params
         cargs = self._cookie_args()
-        if cargs.get('cookies_file'):
-            args += ["--cookies-file", str(cargs['cookies_file'])]
-        elif cargs.get('cookies_from_browser'):
-            args += ["--cookies-from-browser", str(cargs['cookies_from_browser'])]
-        self._run_browse(args)
+        params = {'url': url, **cargs}
+        self._begin_browse('playlist', params)
 
     def on_category(self):
         sender = self.sender()
         if not hasattr(sender, 'text'):
             return
         label = str(sender.text()).lower()
-        lim = int(self.limit_spin.value())
         cmd_map = {
             'home': 'home',
             'watch later': 'watchlater',
@@ -577,35 +581,63 @@ class YouTubePane(QWidget):
         subcmd = cmd_map.get(label)
         if not subcmd:
             return
-        args = [subcmd, "--limit", str(lim)]
         cargs = self._cookie_args()
-        if cargs.get('cookies_file'):
-            args += ["--cookies-file", str(cargs['cookies_file'])]
-        elif cargs.get('cookies_from_browser'):
-            args += ["--cookies-from-browser", str(cargs['cookies_from_browser'])]
-        self._run_browse(args)
+        self._begin_browse(subcmd, {**cargs})
 
     # ---------- Process handling for browse ----------
-    def _run_browse(self, args: List[str]):
-        # Kill previous browse process
+    def _begin_browse(self, kind: str, params: Dict[str, Any]):
+        # Reset list and paging state, then load first page
+        self._browse_kind = kind
+        self._browse_params = params or {}
+        self._page_size = int(self.limit_spin.value()) or 25
+        self._next_start = 1
+        self._seen_urls.clear()
+        self.list.clear()
+        self._set_status('Loading…')
+        self._load_page(self._next_start, self._page_size)
+
+    def _make_args_for_page(self, start: int, limit: int) -> List[str]:
+        kind = self._browse_kind or ''
+        p = self._browse_params or {}
+        args: List[str] = []
+        if kind == 'search':
+            args = ["search", str(p.get('query', '')), "--start", str(start), "--limit", str(limit)]
+        elif kind == 'playlist':
+            args = ["playlist", str(p.get('url', '')), "--start", str(start), "--limit", str(limit)]
+        elif kind in ('home', 'watchlater', 'liked', 'subs', 'myplaylists'):
+            args = [kind, "--start", str(start), "--limit", str(limit)]
+        else:
+            args = []
+        # Cookies if present
+        if p.get('cookies_file'):
+            args += ["--cookies-file", str(p['cookies_file'])]
+        elif p.get('cookies_from_browser'):
+            args += ["--cookies-from-browser", str(p['cookies_from_browser'])]
+        return args
+
+    def _load_page(self, start: int, limit: int):
+        if self._loading_more:
+            return
+        args = self._make_args_for_page(start, limit)
+        if not args:
+            return
+        # Kill previous browse process if still running
         if self._browse_proc is not None:
             try:
                 self._browse_proc.kill()
             except Exception:
                 pass
             self._browse_proc = None
-        # Clear list and status
-        self.list.clear()
         self._browse_buf = ''
+        self._loading_more = True
         py = shlex.quote(sys.executable)
         script = shlex.quote(str(SCRIPTS_DIR / 'yt_browse.py'))
-        # Global args must come before subcommand; ensure --format is first
         cmd = " ".join([py, '-u', script, '--format', 'jsonl'] + [shlex.quote(a) for a in args])
-        self._set_status('Loading…')
         p = QProcess(self)
         self._browse_proc = p
         p.setWorkingDirectory(str(ROOT))
         p.setProcessChannelMode(QProcess.MergedChannels)
+
         def on_out():
             data = bytes(p.readAllStandardOutput()).decode('utf-8', errors='ignore')
             if not data:
@@ -613,32 +645,61 @@ class YouTubePane(QWidget):
             self._browse_buf += data
             lines = self._browse_buf.split('\n')
             self._browse_buf = '' if self._browse_buf.endswith('\n') else lines.pop()
+            new_rows: List[Dict[str, Any]] = []
             for line in lines:
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     obj = json.loads(line)
-                    row = {
-                        'title': obj.get('title', ''),
-                        'channel': obj.get('channel', ''),
-                        'duration': obj.get('duration', ''),
-                        'upload_date': obj.get('upload_date', ''),
-                        'url': obj.get('url', ''),
-                        'thumbnail': obj.get('thumbnail', ''),
-                    }
-                    self._insert_rows([row])
-                    # Adjust layout responsively as items stream in
-                    self._recompute_grid()
                 except Exception:
                     # non-JSON line: status or error
                     self._set_status(line)
+                    continue
+                row = {
+                    'title': obj.get('title', ''),
+                    'channel': obj.get('channel', ''),
+                    'duration': obj.get('duration', ''),
+                    'upload_date': obj.get('upload_date', ''),
+                    'url': obj.get('url', ''),
+                    'thumbnail': obj.get('thumbnail', ''),
+                }
+                u = (row.get('url') or '').strip()
+                if u and u not in self._seen_urls:
+                    self._seen_urls.add(u)
+                    new_rows.append(row)
+            if new_rows:
+                self._insert_rows(new_rows)
+                self._recompute_grid()
+
         def on_done(rc, _st):
+            self._loading_more = False
             if rc != 0 and self.status.text().strip() == 'Loading…':
                 self._set_status('No results or failed.')
+            else:
+                # Advance next start; be robust to partial pages
+                self._next_start = max(self._next_start, start + limit)
+                if self.list.count() > 0 and self.status.text().strip().startswith('Loading'):
+                    self._set_status('')
+
         p.readyReadStandardOutput.connect(on_out)
         p.finished.connect(on_done)
         p.start("/bin/sh", ["-c", cmd])
+
+    def _on_scroll_value_changed(self, value: int):
+        try:
+            bar = self.list.verticalScrollBar()
+            if not bar:
+                return
+            # Trigger when within 3 item-heights from bottom
+            threshold = max(120, self._card_size.height() * 3)
+            if value >= (bar.maximum() - threshold):
+                # Load next page if not already loading
+                if not self._loading_more and self._browse_kind:
+                    self._set_status('Loading more…')
+                    self._load_page(self._next_start, self._page_size)
+        except Exception:
+            pass
 
     def on_download_selected(self):
         items = self.list.selectedItems()

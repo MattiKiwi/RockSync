@@ -15,7 +15,9 @@ def make_ydl(cookies_from_browser: Optional[str] = None,
              cookies_file: Optional[str] = None,
              flat: bool = True,
              verbose: bool = False,
-             playlist_limit: Optional[int] = None) -> YoutubeDL:
+             playlist_limit: Optional[int] = None,
+             playlist_start: Optional[int] = None,
+             playlist_end: Optional[int] = None) -> YoutubeDL:
     """
     Build a YoutubeDL instance configured for *browsing* (fast, no download).
     You can pass either cookies_from_browser (e.g. 'chrome', 'firefox', 'edge', 'brave')
@@ -37,8 +39,13 @@ def make_ydl(cookies_from_browser: Optional[str] = None,
         # A realistic UA can reduce bot friction on some hosts
         "http_headers": {"User-Agent": "Mozilla/5.0"},
     }
-    if playlist_limit is not None and isinstance(playlist_limit, int) and playlist_limit > 0:
-        # Stop extraction early for long playlists/feeds
+    # Control start/end window. Prefer explicit start/end if provided; otherwise use limit as end.
+    if playlist_start is not None and isinstance(playlist_start, int) and playlist_start > 0:
+        ydl_opts["playliststart"] = int(playlist_start)
+    if playlist_end is not None and isinstance(playlist_end, int) and playlist_end > 0:
+        ydl_opts["playlistend"] = int(playlist_end)
+    elif playlist_limit is not None and isinstance(playlist_limit, int) and playlist_limit > 0 and "playlistend" not in ydl_opts:
+        # Fallback: if only limit provided, use it as end with implicit start=1
         ydl_opts["playlistend"] = int(playlist_limit)
     if cookies_from_browser:
         # yt-dlp Python API expects a tuple/list (browser[, profile[, keyring[, container]]]).
@@ -238,17 +245,29 @@ def normalize(e: Dict[str, Any]) -> Dict[str, Any]:
 
 # ---------- Commands ----------
 def cmd_search(args):
-    with make_ydl(flat=True, verbose=args.verbose, playlist_limit=None) as ydl:
-        url = f"ytsearch{args.limit}:{args.query}"
+    # Compute paging window
+    start = int(getattr(args, 'start', 1) or 1)
+    if start < 1:
+        start = 1
+    end = start + int(args.limit) - 1
+    # ytsearchN must be large enough to include the requested window
+    n = end
+    with make_ydl(flat=True, verbose=args.verbose, playlist_limit=None,
+                  playlist_start=start, playlist_end=end) as ydl:
+        url = f"ytsearch{n}:{args.query}"
         ents = extract_entries(url, ydl, args.limit)
         rows = [normalize(e) for e in ents]
         _enrich_missing_metadata(rows, verbose=args.verbose)
         emit_rows(rows, [("title", "Title"), ("channel", "Channel"), ("url", "URL")], getattr(args, 'format', 'table'))
 
 def cmd_playlist(args):
+    start = int(getattr(args, 'start', 1) or 1)
+    if start < 1:
+        start = 1
+    end = start + int(args.limit) - 1
     with make_ydl(cookies_from_browser=getattr(args, 'cookies_from_browser', None),
                   cookies_file=getattr(args, 'cookies_file', None),
-                  flat=True, verbose=args.verbose, playlist_limit=args.limit) as ydl:
+                  flat=True, verbose=args.verbose, playlist_start=start, playlist_end=end) as ydl:
         url = args.url
         ents = extract_entries(url, ydl, args.limit)
         rows = [normalize(e) for e in ents]
@@ -261,8 +280,16 @@ def cmd_playlist(args):
 def _authed_ydl(args) -> YoutubeDL:
     if not (args.cookies_from_browser or args.cookies_file):
         raise SystemExit("This command requires auth. Pass --cookies-from-browser <browser> or --cookies-file <path>.")
+    start = int(getattr(args, 'start', 1) or 1)
+    if start < 1:
+        start = 1
+    limit = int(getattr(args, 'limit', 0) or 0)
+    end = start + limit - 1 if limit > 0 else None
     return make_ydl(cookies_from_browser=args.cookies_from_browser, cookies_file=args.cookies_file,
-                    flat=True, verbose=args.verbose, playlist_limit=getattr(args, 'limit', None))
+                    flat=True, verbose=args.verbose,
+                    playlist_limit=None if end else limit or None,
+                    playlist_start=start if start else None,
+                    playlist_end=end)
 
 def cmd_watch_later(args):
     with _authed_ydl(args) as ydl:
@@ -369,11 +396,13 @@ def main():
     sp = sub.add_parser("search", help="Search public videos")
     sp.add_argument("query")
     sp.add_argument("--limit", type=int, default=25)
+    sp.add_argument("--start", type=int, default=1, help="Start index (1-based) for paging")
     sp.set_defaults(func=cmd_search)
 
     pl = sub.add_parser("playlist", help="Browse a playlist by URL")
     pl.add_argument("url", help="Playlist URL (public or unlisted; private requires cookies)")
     pl.add_argument("--limit", type=int, default=200)
+    pl.add_argument("--start", type=int, default=1, help="Start index (1-based) for paging")
     # Optional cookies for private playlists
     pl.add_argument("--cookies-from-browser", metavar="BROWSER",
                    help="Read cookies directly from your browser (e.g. chrome, firefox, edge, brave)")
@@ -388,6 +417,7 @@ def main():
         a.add_argument("--cookies-file", metavar="PATH",
                        help="Path to cookies.txt (Netscape format)")
         a.add_argument("--limit", type=int, default=200)
+        a.add_argument("--start", type=int, default=1, help="Start index (1-based) for paging")
 
     wl = sub.add_parser("watchlater", help="Your Watch Later (requires cookies)")
     add_auth(wl); wl.set_defaults(func=cmd_watch_later)
