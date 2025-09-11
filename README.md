@@ -1,22 +1,29 @@
 # RockSync
 An optional alternative to iTunes for Rockbox-based MP3 players. Browse your library, index it into a fast SQLite DB, scan a connected device, search, build mixes, one‑way sync to device, clean up covers/lyrics, and run helper scripts — all from a simple Qt (PySide6) app.
 
-## Quick Start
+## Installation
 
-- Requirements: Python 3.9+ and `PySide6`.
-- Install (recommended):
-  - `pip install PySide6 mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm`
-  - Install `ffmpeg` (and `ffprobe`) via your OS package manager if you’ll convert/downsample.
-  - Optional (TIDAL downloads): `pip install tidal-dl-ng`
+Important: Prebuilt packages are currently not working. Please clone the latest repository and install/run manually.
+
+Recommended steps
+
+- Install system prerequisites:
+  - Python 3.9+ (with `pip`)
+  - ffmpeg and ffprobe (for conversions/downsampling)
+- Clone and enter the repo:
+  - `git clone https://github.com/MattiKiwi/RockSync.git`
+  - `cd RockSync`
+- (Optional) Create and activate a virtualenv.
+- Install Python dependencies:
+  - `pip install PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng yt-dlp`
+  - Optional (build tooling): `pip install pyinstaller`
 - Run the app from the repo root:
+  - `python app/main.py`
 
-```
-python app/main.py
-```
+First run: create the Library DB
 
-- Important: create the Library DB first
-  - Open the app → go to “Database” → Source: “Library” → click “Scan”.
-  - This builds `music_index.sqlite3` next to `app/settings.json`. Several features (Search and Daily Mix) rely on this index.
+- Open the app → go to “Database” → Source: “Library” → click “Scan”.
+- This builds `music_index.sqlite3` next to `app/settings.json`. Several features (Search and Daily Mix) rely on this index.
 
 Settings live in `app/settings.json`. Logs are written to `logs/latest.log` and `logs/debug.log` (enable verbose logging in Settings). UI interactions are recorded in `logs/ui_state.log`.
 
