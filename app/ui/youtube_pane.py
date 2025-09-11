@@ -9,7 +9,8 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QListWidget, QListWidgetItem, QSpinBox, QFileDialog, QGroupBox,
-    QCheckBox, QMessageBox, QDialog, QFormLayout, QAbstractItemView, QPlainTextEdit
+    QCheckBox, QMessageBox, QDialog, QFormLayout, QAbstractItemView, QPlainTextEdit,
+    QScroller, QScrollerProperties
 )
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
@@ -96,12 +97,36 @@ class YouTubePane(QWidget):
         self.list.setSpacing(12)
         self.list.setUniformItemSizes(False)
         self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # Smooth scrolling instead of snapping per item
+        self.list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         # Responsive card metrics
         self._min_card_width = 260
         self._thumb_size = QSize(320, 180)
         self._card_size = QSize(self._thumb_size.width() + 16, self._thumb_size.height() + 80)
         self.list.installEventFilter(self)
         root.addWidget(self.list, 1)
+
+        # Kinetic (inertial) scrolling with smooth per-pixel deltas and no snapping
+        try:
+            self.list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+            self.list.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+            scroller = QScroller.scroller(self.list.viewport())
+            props = scroller.scrollerProperties()
+            props.setScrollMetric(QScrollerProperties.FrameRate, QScrollerProperties.Fps60)
+            props.setScrollMetric(QScrollerProperties.DecelerationFactor, 0.06)
+            props.setScrollMetric(QScrollerProperties.DragVelocitySmoothingFactor, 0.15)
+            props.setScrollMetric(QScrollerProperties.MaximumVelocity, 0.6)
+            props.setScrollMetric(QScrollerProperties.MinimumVelocity, 0.0)
+            props.setScrollMetric(QScrollerProperties.AxisLockThreshold, 0.12)
+            props.setScrollMetric(QScrollerProperties.OvershootPolicy, QScrollerProperties.OvershootAlwaysOff)
+            scroller.setScrollerProperties(props)
+            QScroller.grabGesture(self.list.viewport(), QScroller.LeftMouseButtonGesture)
+            # Smaller pixel steps for wheel/keys to avoid jumpy feel
+            self.list.verticalScrollBar().setSingleStep(12)
+            self.list.horizontalScrollBar().setSingleStep(12)
+        except Exception:
+            pass
 
         # Download controls
         dl_group = QGroupBox("Download")
