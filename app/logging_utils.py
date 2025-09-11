@@ -45,7 +45,7 @@ def setup_logging(settings: dict, session_id: str) -> logging.Logger:
     root_logger.addHandler(sh)
 
     # latest.log
-    latest_path = ROOT / "app" / "latest.log"
+    latest_path = ROOT / "logs" / "latest.log"
     latest_path.parent.mkdir(parents=True, exist_ok=True)
     lh = logging.FileHandler(latest_path, mode='w', encoding='utf-8')
     lh.setLevel(logging.DEBUG)
@@ -54,7 +54,7 @@ def setup_logging(settings: dict, session_id: str) -> logging.Logger:
     root_logger.addHandler(lh)
 
     # debug.log (rotating)
-    debug_path = ROOT / "app" / "debug.log"
+    debug_path = ROOT / "logs" / "debug.log"
     rh = logging.handlers.RotatingFileHandler(debug_path, maxBytes=1_000_000, backupCount=5, encoding='utf-8')
     rh.setLevel(logging.DEBUG)
     rh.setFormatter(file_fmt)
@@ -62,7 +62,7 @@ def setup_logging(settings: dict, session_id: str) -> logging.Logger:
     root_logger.addHandler(rh)
 
     # ui_state.log
-    ui_path = ROOT / "app" / "ui_state.log"
+    ui_path = ROOT / "logs" / "ui_state.log"
     uh = logging.FileHandler(ui_path, mode='w', encoding='utf-8')
     uh.setLevel(logging.DEBUG)
     uh.setFormatter(file_fmt)

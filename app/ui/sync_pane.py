@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 from core import SCRIPTS_DIR
 from rockbox_utils import list_rockbox_devices
+from logging_utils import ui_log
 
 
 class SyncPane(QWidget):
@@ -136,6 +137,10 @@ class SyncPane(QWidget):
             "  This step exports embedded lyrics to sidecar .lrc files under a 'Lyrics' subfolder beside each track.")
 
     def _refresh_devices(self):
+        try:
+            ui_log('sync_refresh_devices')
+        except Exception:
+            pass
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         devices = list_rockbox_devices()
@@ -152,6 +157,10 @@ class SyncPane(QWidget):
         mp = self.device_combo.currentData()
         if mp:
             self.target_label.setText(mp.rstrip('/\\') + '/Music')
+        try:
+            ui_log('sync_device_selected', index=int(idx), mount=mp)
+        except Exception:
+            pass
 
     def _pick_dir(self, edit: QLineEdit):
         from PySide6.QtWidgets import QFileDialog
@@ -167,11 +176,19 @@ class SyncPane(QWidget):
         self.remove_sel_btn.setVisible(is_partial)
         self.clear_sel_btn.setVisible(is_partial)
         self.sel_list.setVisible(is_partial)
+        try:
+            ui_log('sync_mode_changed', mode=self.mode_combo.currentText())
+        except Exception:
+            pass
     def _add_folder(self):
         base = self.src_edit.text().strip()
         path = QFileDialog.getExistingDirectory(self, "Select folder to sync", base or os.getcwd())
         if not path:
             return
+        try:
+            ui_log('sync_add_folder', path=path)
+        except Exception:
+            pass
         try:
             # Ensure selection is inside source base
             basep = Path(base).resolve()
@@ -189,9 +206,17 @@ class SyncPane(QWidget):
         for it in self.sel_list.selectedItems():
             row = self.sel_list.row(it)
             self.sel_list.takeItem(row)
+        try:
+            ui_log('sync_remove_selected')
+        except Exception:
+            pass
 
     def _clear_selected(self):
         self.sel_list.clear()
+        try:
+            ui_log('sync_clear_selected')
+        except Exception:
+            pass
 
     def start_sync(self):
         if self._worker and self._worker.is_alive():
@@ -211,6 +236,10 @@ class SyncPane(QWidget):
         # Inform top bar indicator
         try:
             self.controller._set_action_status("Sync: preparing...", True)
+        except Exception:
+            pass
+        try:
+            ui_log('sync_start', src=src, mount=mp)
         except Exception:
             pass
         mode = self.mode_combo.currentText()
@@ -547,6 +576,10 @@ class SyncPane(QWidget):
         self._stop_flag = True
         try:
             self.controller._set_action_status("Sync: stopping...", True)
+        except Exception:
+            pass
+        try:
+            ui_log('sync_stop')
         except Exception:
             pass
 

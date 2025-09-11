@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 from rockbox_utils import list_rockbox_devices
 from core import CONFIG_PATH
+from logging_utils import ui_log
 
 
 class SearchPane(QWidget):
@@ -87,6 +88,10 @@ class SearchPane(QWidget):
     def _perform_search(self):
         query = (self.query_edit.text() or "").strip()
         field = (self.field_combo.currentText() or "Any").lower()
+        try:
+            ui_log('search_perform', query=query, field=field, source=str(self.source_combo.currentText()))
+        except Exception:
+            pass
         self.table.setRowCount(0)
         db_path = self._current_db_path()
         if not db_path or not os.path.isfile(db_path):
@@ -144,6 +149,10 @@ class SearchPane(QWidget):
     def _clear_results(self):
         self.table.setRowCount(0)
         self.status_label.setText("")
+        try:
+            ui_log('search_clear')
+        except Exception:
+            pass
 
     def scan_library(self):
         if self._is_scanning:
@@ -170,6 +179,10 @@ class SearchPane(QWidget):
 
     # ---------- Sources ----------
     def _refresh_sources(self):
+        try:
+            ui_log('search_refresh_sources')
+        except Exception:
+            pass
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
         # Library option from settings

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from core import ROOT, cmd_exists
+import logging
 from settings_store import load_settings, save_settings
 from logging_utils import setup_logging, ui_log
 from tasks_registry import get_tasks
@@ -223,6 +224,11 @@ class AppWindow(QMainWindow):
                         return
                 return
             self.stack.setCurrentIndex(int(idx))
+            try:
+                from logging_utils import ui_log
+                ui_log('nav_change', label=str(it.text()), index=int(idx))
+            except Exception:
+                pass
 
         self.nav.currentItemChanged.connect(lambda _c, _p: on_nav_changed())
         # Select first real page
@@ -371,7 +377,7 @@ class AppWindow(QMainWindow):
         self.advanced_group = QGroupBox("Advanced Options")
         adv_form = QFormLayout(self.advanced_group)
 
-        self.debug_cb = QCheckBox("Enable verbose debug logging (writes to app/debug.log)")
+        self.debug_cb = QCheckBox("Enable verbose debug logging (writes to logs/debug.log)")
         self.debug_cb.setChecked(bool(self.settings.get("debug", False)))
         adv_form.addRow("Debug", self.debug_cb)
 
@@ -659,9 +665,19 @@ class AppWindow(QMainWindow):
         return " ".join(parts)
 
     def append_output(self, text):
+        # Append to UI
         self.output.moveCursor(QTextCursor.End)
         self.output.insertPlainText(text)
         self.output.moveCursor(QTextCursor.End)
+        # Also log captured process output
+        try:
+            logger = logging.getLogger("RockSyncGUI.TaskOutput")
+            for line in str(text).splitlines():
+                line = line.rstrip()
+                if line:
+                    logger.info(line)
+        except Exception:
+            pass
 
     def run_task(self):
         idx = self.task_list.currentRow()

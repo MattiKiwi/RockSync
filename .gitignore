@@ -203,3 +203,5 @@ rockbox
 *.sqlite3
 settings.json
 yt_dlp.txt
+*.log.*
+logs/

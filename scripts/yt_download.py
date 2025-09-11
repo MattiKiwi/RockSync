@@ -23,6 +23,14 @@ except Exception:
 
 import subprocess
 import re
+import uuid
+
+# Initialize CLI logging early so all prints are captured to logs
+try:
+    from _cli_logging import setup_cli_logging
+    _LOGGER = setup_cli_logging(debug=False, session_id=str(uuid.uuid4())[:8])
+except Exception:
+    _LOGGER = None
 
 
 def build_preset(name: str) -> Dict[str, Any]:
@@ -278,7 +286,15 @@ def run(argv: List[str]) -> int:
 
     # Run streaming
     try:
-        proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+        # Capture output and forward to stdout so it gets logged via our logger redirection
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            try:
+                # Keep streaming output visible and logged
+                print(line.rstrip())
+            except Exception:
+                pass
         return proc.wait()
     except FileNotFoundError:
         print("yt-dlp executable not found. Install it or add to PATH.", file=sys.stderr)

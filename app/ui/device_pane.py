@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit, QFileDialog, QComboBox
 )
 from rockbox_utils import list_rockbox_devices
+from logging_utils import ui_log
 from ui.explorer_pane import ExplorerPane
 
 
@@ -78,6 +79,7 @@ class DeviceExplorerPane(ExplorerPane):
         self._refresh_devices()
 
     def _refresh_devices(self):
+        ui_log('device_refresh_click')
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         devices = list_rockbox_devices()
@@ -100,10 +102,16 @@ class DeviceExplorerPane(ExplorerPane):
     def _refresh_folder(self):
         path = (self.explorer_path.text() or '').strip()
         if path and os.path.isdir(path):
+            ui_log('device_refresh_folder', path=path)
             self.navigate(path)
 
     def _on_device_changed(self, idx):
         # Auto-open Music on selection
+        try:
+            data = self.device_combo.itemData(idx)
+            ui_log('device_select', index=int(idx), mount=data)
+        except Exception:
+            pass
         self._use_selected_music()
 
     def _use_selected_music(self):
@@ -112,4 +120,5 @@ class DeviceExplorerPane(ExplorerPane):
             # No device selected/available: keep view empty
             return
         path = mp.rstrip('/\\') + '/Music'
+        ui_log('device_use_music', mount=mp, path=path)
         self._set_path(path)

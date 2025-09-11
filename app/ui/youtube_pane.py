@@ -19,6 +19,8 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from core import ROOT, SCRIPTS_DIR
 from settings_store import load_settings, save_settings
 from ui.explorer_pane import ImportDialog
+from logging_utils import ui_log
+import logging
 import json
 import re
 import subprocess
@@ -698,6 +700,7 @@ class YouTubePane(QWidget):
         q = (self.search_edit.text() or '').strip()
         if not q:
             return
+        ui_log('yt_search_click', query=q, limit=int(self.limit_spin.value() or 0))
         self._begin_browse('search', {'query': q})
 
     def on_open_playlist(self):
@@ -707,6 +710,7 @@ class YouTubePane(QWidget):
         # Save cookies context in params
         cargs = self._cookie_args()
         params = {'url': url, **cargs}
+        ui_log('yt_open_playlist_click', url=url)
         self._begin_browse('playlist', params)
 
     def on_category(self):
@@ -725,11 +729,13 @@ class YouTubePane(QWidget):
         if not subcmd:
             return
         cargs = self._cookie_args()
+        ui_log('yt_category_click', category=subcmd)
         self._begin_browse(subcmd, {**cargs})
 
     # ---------- Process handling for browse ----------
     def _begin_browse(self, kind: str, params: Dict[str, Any]):
         # Reset list and paging state, then load first page
+        ui_log('yt_browse_begin', kind=kind, params=params)
         self._browse_kind = kind
         self._browse_params = params or {}
         self._page_size = int(self.limit_spin.value()) or 25
@@ -868,6 +874,7 @@ class YouTubePane(QWidget):
         if not dest:
             # User canceled
             return
+        ui_log('yt_download_click', count=len(urls), dest=dest)
 
         prof = self.profile_combo.currentData()
         args_str = ''
@@ -1003,6 +1010,10 @@ class YouTubePane(QWidget):
         self.proc.readyReadStandardOutput.connect(lambda: self._append_status(bytes(self.proc.readAllStandardOutput()).decode('utf-8', errors='ignore')))
         self.proc.finished.connect(self._on_downloader_finished)
         self._set_status("Starting download…")
+        try:
+            ui_log('yt_process_start', cmd=cmd)
+        except Exception:
+            pass
         self.proc.start("/bin/sh", ["-c", cmd])
 
     def _append_status(self, text: str):
@@ -1010,6 +1021,14 @@ class YouTubePane(QWidget):
         t = (self.status.text() or '')
         t = (t + "\n" + text).splitlines()[-6:]
         self.status.setText("\n".join(t))
+        try:
+            logger = logging.getLogger("RockSyncGUI.YouTube")
+            for line in str(text).splitlines():
+                line = line.rstrip()
+                if line:
+                    logger.info(line)
+        except Exception:
+            pass
 
     def _on_downloader_finished(self, rc: int, _status):
         try:

@@ -18,7 +18,7 @@ python app/main.py
   - Open the app → go to “Database” → Source: “Library” → click “Scan”.
   - This builds `music_index.sqlite3` next to `app/settings.json`. Several features (Search and Daily Mix) rely on this index.
 
-Settings live in `app/settings.json`. Logs are written to `app/latest.log` and `app/debug.log` (enable verbose logging in Settings).
+Settings live in `app/settings.json`. Logs are written to `logs/latest.log` and `logs/debug.log` (enable verbose logging in Settings). UI interactions are recorded in `logs/ui_state.log`.
 
 ## Capabilities
 

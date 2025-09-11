@@ -211,6 +211,7 @@ class ExplorerPane(QWidget):
     def _browse(self):
         path = QFileDialog.getExistingDirectory(self, "Select folder", self.explorer_path.text() or os.getcwd())
         if path:
+            ui_log('explorer_browse', selected=path)
             self._set_path(path)
 
     def _set_path(self, path):
@@ -223,12 +224,14 @@ class ExplorerPane(QWidget):
         cur = self.explorer_path.text().strip()
         parent = os.path.dirname(cur.rstrip(os.sep)) or cur
         if parent and os.path.isdir(parent):
+            ui_log('explorer_up', from_path=cur, to_path=parent)
             self._set_path(parent)
 
     def navigate(self, path):
         path = os.path.abspath(path)
         if not os.path.isdir(path):
             return
+        ui_log('explorer_navigate', path=path)
         self.explorer_path.setText(path)
         self.tree.clear()
         try:
@@ -259,8 +262,10 @@ class ExplorerPane(QWidget):
     def _on_item_open(self, item, column):
         full = item.data(0, Qt.UserRole)
         if os.path.isdir(full):
+            ui_log('explorer_open_folder', path=full)
             self.navigate(full)
         else:
+            ui_log('explorer_show_file', path=full)
             self.show_info(full)
 
     def _on_item_select(self):
@@ -639,6 +644,7 @@ class ImportDialog(QDialog):
         exts = ['*.flac','*.mp3','*.m4a','*.alac','*.aac','*.ogg','*.opus','*.wav']
         files, _ = QFileDialog.getOpenFileNames(self, "Select music files", os.getcwd(), f"Audio Files ({' '.join(exts)})")
         if files:
+            ui_log('import_select_files', count=len(files))
             self.files = files
             self.files_edit.setText(f"{len(files)} file(s) selected")
             # Try to auto-fill album/artist when importing as Album
@@ -649,6 +655,7 @@ class ImportDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, "Select folder with music", os.getcwd())
         if not folder:
             return
+        ui_log('import_select_folder', folder=folder)
         files = self._collect_audio_files(folder)
         self.files = files
         self.files_edit.setText(f"{len(files)} file(s) from folder")
@@ -750,6 +757,12 @@ class ImportDialog(QDialog):
                 QMessageBox.warning(self, "Missing name", "Please provide a playlist name.")
                 return
         self.accept()
+        try:
+            ui_log('import_accept', mode=mode, files=len(self.files or []),
+                   artist=self.album_artist.text().strip(), album=self.album_title.text().strip(),
+                   playlist=self.playlist_name.text().strip(), subfolder=self.playlist_sub.text().strip())
+        except Exception:
+            pass
 
     def get_values(self):
         mode = self.mode.currentText()
