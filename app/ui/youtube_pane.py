@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QListWidget, QListWidgetItem, QSpinBox, QFileDialog, QGroupBox,
     QCheckBox, QMessageBox, QDialog, QFormLayout, QAbstractItemView, QPlainTextEdit,
-    QScroller, QScrollerProperties, QToolButton
+    QScroller, QScrollerProperties, QToolButton, QSizePolicy
 )
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
@@ -202,8 +202,22 @@ class YouTubePane(QWidget):
         dl.addWidget(self.btn_download_import)
         root.addWidget(dl_group)
 
-        # Status
+        # Status (fixed-height, non-resizing)
         self.status = QLabel("")
+        try:
+            self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        except Exception:
+            pass
+        # Keep last few lines in a fixed-height area to avoid window resize on long outputs
+        try:
+            fm = self.fontMetrics()
+            line_h = fm.height() if fm else 16
+            self.status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.status.setMaximumHeight(int(line_h * 6 + 8))
+            self.status.setMinimumHeight(int(line_h * 3 + 4))
+            self.status.setWordWrap(True)
+        except Exception:
+            pass
         root.addWidget(self.status)
 
         # Browse process state for yt_browse.py
@@ -969,7 +983,9 @@ class YouTubePane(QWidget):
             parts.append(shlex.quote(u))
         cmd = " ".join(parts)
         # Record post action and start
-        self._post_download = { 'kind': 'import', 'tmpdir': tmpdir }
+        # Track whether this run is a split-chapters profile for smarter import defaults
+        is_split = ('--split-chapters' in (args_str or '')) or ('chapter:' in (args_str or ''))
+        self._post_download = { 'kind': 'import', 'tmpdir': tmpdir, 'split': is_split }
         self._start_process(cmd)
 
     def _add_manual_url(self):
@@ -1039,9 +1055,10 @@ class YouTubePane(QWidget):
                 # If an import is pending, run it
                 if self._post_download and self._post_download.get('kind') == 'import':
                     tmp = self._post_download.get('tmpdir')
+                    post = self._post_download
                     self._post_download = None
                     if tmp and os.path.isdir(tmp):
-                        self._do_import_from_temp(tmp)
+                        self._do_import_from_temp(tmp, post)
             else:
                 # Clean up temp dir if any pending import
                 if self._post_download and self._post_download.get('kind') == 'import':
@@ -1056,8 +1073,107 @@ class YouTubePane(QWidget):
             pass
 
     # ---------- Import integration ----------
-    def _do_import_from_temp(self, tmpdir: str):
+    def _do_import_from_temp(self, tmpdir: str, post: Optional[Dict[str, Any]] = None):
         try:
+            # Detect split-chapter downloads and normalize per-video folders
+            # Our convention: profiles that split chapters use an output template like
+            #   -o 'chapter:%(title)s/...'
+            # We rename such folders to strip the 'chapter:' prefix so the final
+            # folder is just the video title. If exactly one such folder exists,
+            # we will also auto-select Playlist import and prefill the playlist name.
+            chapter_dirs: List[str] = []
+            try:
+                for name in os.listdir(tmpdir):
+                    p = os.path.join(tmpdir, name)
+                    if os.path.isdir(p) and name.startswith('chapter:'):
+                        chapter_dirs.append(p)
+                # Normalize names by stripping the prefix
+                normalized_dirs = []
+                for d in chapter_dirs:
+                    base = os.path.basename(d)
+                    stripped = base[len('chapter:'):].strip() or 'Untitled'
+                    safe = self._safe_part(stripped)
+                    target = os.path.join(os.path.dirname(d), safe)
+                    if os.path.normpath(d) != os.path.normpath(target):
+                        try:
+                            # If target exists, avoid clobbering by appending a suffix
+                            final_target = target
+                            i = 1
+                            while os.path.exists(final_target):
+                                final_target = target + f"_{i}"
+                                i += 1
+                            os.rename(d, final_target)
+                            normalized_dirs.append(final_target)
+                        except Exception:
+                            # On failure, keep original
+                            normalized_dirs.append(d)
+                    else:
+                        normalized_dirs.append(d)
+                chapter_dirs = normalized_dirs
+            except Exception:
+                pass
+
+            # Heuristic: if no 'chapter:' dirs found, look for subfolders with multiple
+            # audio files (older template: '%(title)s/..'). These are per-video folders.
+            try:
+                candidates: List[str] = []
+                for name in os.listdir(tmpdir):
+                    p = os.path.join(tmpdir, name)
+                    if os.path.isdir(p):
+                        af = self._collect_audio_files(p)
+                        if len(af) >= 2:
+                            candidates.append(p)
+                if not chapter_dirs and candidates:
+                    chapter_dirs = candidates
+            except Exception:
+                pass
+
+            # If we have one or more per-video folders, handle batch import (one dialog per video)
+            if chapter_dirs:
+                music_root = self.controller.settings.get('music_root', '')
+                if not music_root:
+                    QMessageBox.warning(self, "Import", "Set your Music Root in Settings first.")
+                    return
+                os.makedirs(music_root, exist_ok=True)
+                last_sub = ''
+                imported_total = 0
+                for d in chapter_dirs:
+                    files = self._collect_audio_files(d)
+                    if not files:
+                        continue
+                    # Open Import dialog prefilled for Playlist mode
+                    dlg = ImportDialog(self)
+                    dlg.files = files
+                    try:
+                        dlg.files_edit.setText(f"{len(files)} file(s) selected")
+                    except Exception:
+                        pass
+                    try:
+                        dlg.mode.setCurrentText('Playlist')
+                        if last_sub:
+                            dlg.playlist_sub.setText(last_sub)
+                        base_name = os.path.basename(d)
+                        if not dlg.playlist_name.text().strip():
+                            dlg.playlist_name.setText(base_name)
+                    except Exception:
+                        pass
+                    if dlg.exec() != QDialog.Accepted:
+                        # Abort remaining folders if user cancels
+                        break
+                    params = dlg.get_values()
+                    last_sub = params.get('subfolder', '').strip()
+                    name = params.get('playlist', '').strip()
+                    sub = params.get('subfolder', '').strip()
+                    base = os.path.join(music_root, 'Playlists')
+                    dest_dir = os.path.join(base, sub, name) if sub else os.path.join(base, name)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    copied = self._copy_files(files, dest_dir)
+                    imported_total += len(copied)
+                if imported_total > 0:
+                    QMessageBox.information(self, "Import Complete", f"Imported {imported_total} files from {len(chapter_dirs)} video(s).")
+                return
+
+            # Fallback: gather all files in temp dir
             files = self._collect_audio_files(tmpdir)
             if not files:
                 QMessageBox.information(self, "Import", "No audio files were downloaded.")
@@ -1071,6 +1187,12 @@ class YouTubePane(QWidget):
             dlg.files = files
             try:
                 dlg.files_edit.setText(f"{len(files)} file(s) selected")
+            except Exception:
+                pass
+            # If profile signaled split-chapters, default to Playlist even without per-video folder
+            try:
+                if isinstance(post, dict) and bool(post.get('split')):
+                    dlg.mode.setCurrentText('Playlist')
             except Exception:
                 pass
             if dlg.exec() != QDialog.Accepted:

@@ -174,6 +174,39 @@ def run(argv: List[str]) -> int:
         cmd += ['--cookies', ns.cookies_file]
     elif ns.cookies_from_browser:
         cmd += ['--cookies-from-browser', ns.cookies_from_browser]
+    # Safety: when using --split-chapters with embedding flags, disable embedding and
+    # write sidecar files instead for safe post-processing.
+    def _has_flag(tokens: List[str], flag: str) -> bool:
+        for t in tokens:
+            if t == flag or t.startswith(flag + '='):
+                return True
+        return False
+    def _has_any(tokens: List[str], flags: List[str]) -> bool:
+        return any(_has_flag(tokens, f) for f in flags)
+    has_split = _has_flag(cmd, '--split-chapters')
+    has_embed_meta = _has_any(cmd, ['--embed-metadata', '--add-metadata'])
+    has_embed_thumb = _has_flag(cmd, '--embed-thumbnail')
+    if has_split and (has_embed_meta or has_embed_thumb):
+        sanitized: List[str] = []
+        i = 0
+        while i < len(cmd):
+            t = cmd[i]
+            if t == '--embed-metadata' or t.startswith('--embed-metadata=') or t == '--add-metadata' or t.startswith('--add-metadata='):
+                i += 1
+                continue
+            if t == '--embed-thumbnail' or t.startswith('--embed-thumbnail='):
+                i += 1
+                continue
+            sanitized.append(t)
+            i += 1
+        cmd = sanitized
+        print('[yt_download] Notice: Disabled metadata/thumbnail embedding with --split-chapters; writing sidecar files instead.', flush=True)
+        if not _has_flag(cmd, '--write-thumbnail'):
+            cmd += ['--write-thumbnail']
+        if not _has_flag(cmd, '--convert-thumbnails'):
+            cmd += ['--convert-thumbnails', 'jpg']
+        if not _has_flag(cmd, '--write-info-json'):
+            cmd += ['--write-info-json']
     # URLs
     cmd += urls
     # Preflight: ffmpeg availability and encoder support when extracting audio
@@ -284,10 +317,34 @@ def run(argv: List[str]) -> int:
                 print("Error: FFmpeg FLAC encoder not available. Install a full ffmpeg build or choose a different audio format.", file=sys.stderr)
                 return 1
 
+    # If this is a split-chapters run, stage downloads into a temp folder under dest
+    stage_dir: Optional[Path] = None
+    if has_split:
+        try:
+            # Find and replace our --paths dest with a temp subfolder
+            sid = str(uuid.uuid4())[:8]
+            stage_dir = (Path(dest).expanduser() / f".rocksync_ytdl_tmp_{sid}")
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[yt_download] Staging split-chapter download in: {stage_dir}")
+            try:
+                # Replace the value after the first '--paths'
+                if '--paths' in cmd:
+                    i = cmd.index('--paths')
+                    if i + 1 < len(cmd):
+                        cmd[i + 1] = str(stage_dir)
+                else:
+                    # Should not happen (we set it), but keep robust
+                    cmd = cmd[:1] + ['--paths', str(stage_dir)] + cmd[1:]
+            except Exception:
+                pass
+        except Exception:
+            stage_dir = None
+
     # Run streaming
     try:
         # Capture output and forward to stdout so it gets logged via our logger redirection
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        print(cmd)
         assert proc.stdout is not None
         for line in proc.stdout:
             try:
@@ -295,7 +352,14 @@ def run(argv: List[str]) -> int:
                 print(line.rstrip())
             except Exception:
                 pass
-        return proc.wait()
+        rc = proc.wait()
+        if rc == 0 and has_split and stage_dir and stage_dir.exists():
+            try:
+                print('[yt_download] Post-processing split chapters: embedding sidecars and moving into destination…', flush=True)
+                _postprocess_split_chapters(stage_dir, Path(dest))
+            except Exception as e:
+                print(f"[yt_download] Post-process warning: {e}")
+        return rc
     except FileNotFoundError:
         print("yt-dlp executable not found. Install it or add to PATH.", file=sys.stderr)
         return 127
@@ -303,6 +367,364 @@ def run(argv: List[str]) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
+
+# ----------------- Post-processing helpers -----------------
+
+def _postprocess_split_chapters(stage_root: Path, final_dest: Path) -> None:
+    """Embed sidecar metadata/thumbnail into split chapter files and move chapter
+    folders from a staging directory into the final destination.
+
+    Heuristics:
+    - Detect per-video chapter folders whose name starts with 'chapter:'.
+    - For each chapter folder, find a matching info JSON and thumbnail under the
+      staging root; use JSON['title'] to match the folder title when possible.
+    - Embed: album = video title, artist/albumartist = channel/uploader/artist fallback,
+      tracknumber = parsed from leading digits in filename, title = filename sans prefix,
+      date = upload_date (YYYY or YYYY-MM-DD), cover = thumbnail image.
+    - Move finished chapter folders to final_dest and delete the staging root.
+    """
+    import json
+    from typing import Tuple
+    from mutagen import File as MFile
+    from mutagen.flac import FLAC, Picture  # type: ignore
+    from mutagen.mp4 import MP4, MP4Cover  # type: ignore
+    from mutagen.id3 import ID3, APIC, TIT2, TALB, TPE1, TPE2, TRCK, TDRC, ID3NoHeaderError  # type: ignore
+
+    def _collect_info_jsons(root: Path) -> list[Path]:
+        out: list[Path] = []
+        for p in root.glob('**/*.info.json'):
+            try:
+                # Only consider files directly under root (top-level sidecars are most reliable)
+                if p.parent == root:
+                    out.append(p)
+            except Exception:
+                continue
+        # Fallback: allow nested if none found at top-level
+        if not out:
+            out = list(root.glob('**/*.info.json'))
+        return out
+
+    def _load_json(path: Path) -> dict:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _normalize_date(s: str) -> str:
+        s = (s or '').strip()
+        if not s:
+            return ''
+        # yt-dlp uses YYYYMMDD usually
+        if len(s) == 8 and s.isdigit():
+            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+        return s
+
+    def _guess_track_info(filename: str) -> Tuple[int, str]:
+        base = Path(filename).stem
+        m = re.match(r'^(\d{1,3})[\). _-]+(.*)$', base)
+        if m:
+            try:
+                n = int(m.group(1))
+            except Exception:
+                n = 0
+            title = (m.group(2) or '').strip() or base
+            return n, title
+        return 0, base
+
+    def _bytes_for_image(img_path: Optional[Path]) -> tuple[bytes, str]:
+        if not img_path or not img_path.exists():
+            return b'', ''
+        try:
+            data = img_path.read_bytes()
+            ext = img_path.suffix.lower()
+            if ext == '.png':
+                return data, 'image/png'
+            return data, 'image/jpeg'
+        except Exception:
+            return b'', ''
+
+    def _embed_tags(audio_path: Path, meta: dict, thumb_path: Optional[Path]) -> None:
+        artist = (meta.get('artist') or meta.get('channel') or meta.get('uploader') or '').strip()
+        album = (meta.get('title') or '').strip()
+        date = _normalize_date(str(meta.get('upload_date') or ''))
+        track_no, title = _guess_track_info(audio_path.name)
+        ext = audio_path.suffix.lower()
+        img_data, img_mime = _bytes_for_image(thumb_path)
+
+        try:
+            if ext in ('.flac',):
+                f = FLAC(str(audio_path))
+                if title:
+                    f['title'] = [title]
+                if album:
+                    f['album'] = [album]
+                if artist:
+                    f['artist'] = [artist]
+                    f['albumartist'] = [artist]
+                if date:
+                    f['date'] = [date]
+                if track_no > 0:
+                    f['tracknumber'] = [str(track_no)]
+                if img_data:
+                    pic = Picture()
+                    pic.type = 3
+                    pic.mime = img_mime or 'image/jpeg'
+                    pic.desc = 'Cover'
+                    pic.data = img_data
+                    # remove existing front cover(s)
+                    f.clear_pictures()
+                    f.add_picture(pic)
+                f.save()
+                return
+            if ext in ('.m4a', '.mp4', '.alac', '.aac'):
+                m = MP4(str(audio_path))
+                if title:
+                    m['\xa9nam'] = [title]
+                if album:
+                    m['\xa9alb'] = [album]
+                if artist:
+                    m['\xa9ART'] = [artist]
+                    m['aART'] = [artist]
+                if date:
+                    m['\xa9day'] = [date]
+                if track_no > 0:
+                    m['trkn'] = [(track_no, 0)]
+                if img_data:
+                    fmt = MP4Cover.FORMAT_PNG if (img_mime == 'image/png') else MP4Cover.FORMAT_JPEG
+                    m['covr'] = [MP4Cover(img_data, imageformat=fmt)]
+                m.save()
+                return
+            if ext in ('.mp3', '.ogg', '.opus'):
+                # Use ID3 for mp3; for ogg/opus, mutagen maps Easy keys reasonably but APIC not supported.
+                try:
+                    id3 = ID3(str(audio_path))
+                except ID3NoHeaderError:
+                    id3 = ID3()
+                if title:
+                    id3.add(TIT2(encoding=3, text=title))
+                if album:
+                    id3.add(TALB(encoding=3, text=album))
+                if artist:
+                    id3.add(TPE1(encoding=3, text=artist))
+                    id3.add(TPE2(encoding=3, text=artist))
+                if date:
+                    id3.add(TDRC(encoding=3, text=date))
+                if track_no > 0:
+                    id3.add(TRCK(encoding=3, text=str(track_no)))
+                if img_data and audio_path.suffix.lower() == '.mp3':
+                    id3.add(APIC(encoding=3, mime=img_mime or 'image/jpeg', type=3, desc='Cover', data=img_data))
+                id3.save(str(audio_path))
+                return
+            # Fallback: try easy tags
+            mf = MFile(str(audio_path), easy=True)
+            if mf is not None:
+                if title:
+                    mf['title'] = [title]
+                if album:
+                    mf['album'] = [album]
+                if artist:
+                    mf['artist'] = [artist]
+                if track_no > 0:
+                    mf['tracknumber'] = [str(track_no)]
+                mf.save()
+        except Exception:
+            # Non-fatal; keep the file even if tagging failed
+            pass
+
+    print(f"[yt_download] Inspecting staged files in: {stage_root}")
+    # Discover per-video chapter folders under the staging root.
+    chapter_dirs: list[Path] = []
+    AUDIO_EXTS = {'.flac','.mp3','.m4a','.alac','.aac','.ogg','.opus','.wav'}
+    def _has_audio_recursive(d: Path) -> bool:
+        try:
+            for sub in d.rglob('*'):
+                try:
+                    if sub.is_file() and sub.suffix.lower() in AUDIO_EXTS:
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            return False
+        return False
+    for p in stage_root.iterdir():
+        try:
+            if not p.is_dir():
+                continue
+            if _has_audio_recursive(p):
+                chapter_dirs.append(p)
+        except Exception:
+            continue
+    print(f"[yt_download] Found {len(chapter_dirs)} chapter folder(s): {[p.name for p in chapter_dirs]}")
+
+    # Load available infos once to match metadata; try to locate thumbnails near info files
+    info_files = _collect_info_jsons(stage_root)
+    info_by_title: dict[str, dict] = {}
+    def _norm_title(x: str) -> str:
+        s = (x or '').lower()
+        try:
+            s = s.replace('chapter:', '')
+            s = re.sub(r'[^a-z0-9]+', ' ', s)
+            s = ' '.join(s.split())
+        except Exception:
+            pass
+        return s
+    info_by_norm: dict[str, dict] = {}
+    for inf in info_files:
+        data = _load_json(inf)
+        t = (data.get('title') or '').strip()
+        if t:
+            info_by_title.setdefault(t, data)
+            info_by_norm.setdefault(_norm_title(t), data)
+    # Try to locate thumbnails by info title or id (fallback map)
+    thumb_by_info_title: dict[str, Path] = {}
+    thumb_by_info_id: dict[str, Path] = {}
+    for inf in info_files:
+        try:
+            data = _load_json(inf)
+            t = (data.get('title') or '').strip()
+            vid = (data.get('id') or '').strip()
+            # Prefer <staging>/<title>*.jpg (handle extra suffix like video id)
+            if t:
+                for ext in ('.jpg', '.jpeg', '.png'):
+                    matches = sorted(stage_root.glob(f"{t}*{ext}"))
+                    if matches:
+                        thumb_by_info_title[_norm_title(t)] = matches[0]
+                        break
+            if vid:
+                for ext in ('.jpg', '.jpeg', '.png'):
+                    matches = sorted(stage_root.glob(f"*{vid}*{ext}"))
+                    if matches:
+                        thumb_by_info_id[vid] = matches[0]
+                        break
+        except Exception:
+            continue
+
+    def _pick_meta_for_folder(title: str) -> dict:
+        return info_by_title.get(title) or info_by_norm.get(_norm_title(title)) or {}
+
+    def _find_thumbnail_for_folder(folder: Path, title: str) -> Optional[Path]:
+        # Prefer files named after the folder (or stripped title), allowing extra suffix like video id.
+        # Search inside the folder first, then at the staging root; also try matching by video id from sidecar.
+        base_names = [folder.name]
+        if folder.name.startswith('chapter:'):
+            base_names.append(folder.name[len('chapter:'):].strip())
+        if title and title not in base_names:
+            base_names.append(title)
+        # Try inside the folder (exact then wildcard)
+        for bn in base_names:
+            for ext in ('.jpg', '.jpeg', '.png'):
+                p = folder / f"{bn}{ext}"
+                if p.exists():
+                    return p
+            for ext in ('.jpg', '.jpeg', '.png'):
+                matches = sorted(folder.glob(f"{bn}*{ext}"))
+                if matches:
+                    return matches[0]
+        # Try staging root (exact then wildcard)
+        for bn in base_names:
+            for ext in ('.jpg', '.jpeg', '.png'):
+                p = stage_root / f"{bn}{ext}"
+                if p.exists():
+                    return p
+            for ext in ('.jpg', '.jpeg', '.png'):
+                matches = sorted(stage_root.glob(f"{bn}*{ext}"))
+                if matches:
+                    return matches[0]
+        # If a matching info has a video id, try id-based matching
+        meta_for_title = _pick_meta_for_folder(title)
+        vid = (meta_for_title.get('id') or '').strip() if isinstance(meta_for_title, dict) else ''
+        if vid:
+            for ext in ('.jpg', '.jpeg', '.png'):
+                matches = sorted(folder.glob(f"*{vid}*{ext}"))
+                if matches:
+                    return matches[0]
+            for ext in ('.jpg', '.jpeg', '.png'):
+                matches = sorted(stage_root.glob(f"*{vid}*{ext}"))
+                if matches:
+                    return matches[0]
+        # Fallback via normalized title mapped to an info-based thumb
+        tnorm = _norm_title(title)
+        if tnorm in thumb_by_info_title:
+            return thumb_by_info_title[tnorm]
+        # Any image inside folder as last resort
+        for img in folder.glob('*'):
+            try:
+                if img.is_file() and img.suffix.lower() in ('.jpg','.jpeg','.png'):
+                    return img
+            except Exception:
+                continue
+        return None
+
+    # Process each chapter folder
+    for cdir in chapter_dirs:
+        try:
+            # Determine base title for this folder
+            base = cdir.name
+            if base.startswith('chapter:'):
+                base = base[len('chapter:'):].strip() or 'Untitled'
+            # Per-folder: pick thumbnail based on folder/title
+            thumb = _find_thumbnail_for_folder(cdir, base)
+            # Load metadata (JSON) for tags
+            meta = _pick_meta_for_folder(base)
+            thumb_desc = thumb.name if isinstance(thumb, Path) else 'none'
+            print(f"[yt_download] Tagging: {cdir.name}  (album='{base}', cover={thumb_desc})")
+            tagged = 0; total = 0
+            # Tag all audio files inside
+            for ap in cdir.glob('*'):
+                if not ap.is_file():
+                    continue
+                if ap.suffix.lower() not in {'.flac','.mp3','.m4a','.alac','.aac','.ogg','.opus','.wav'}:
+                    continue
+                total += 1
+                try:
+                    _embed_tags(ap, meta, thumb)
+                    tagged += 1
+                except Exception as e:
+                    print(f"[yt_download]   tag warn: {ap.name}: {e}")
+            print(f"[yt_download]   tagged {tagged}/{total} files")
+        except Exception as e:
+            print(f"[yt_download]   tagging error in {cdir.name}: {e}")
+            continue
+
+    # Move chapter folders into final destination
+    final_dest.mkdir(parents=True, exist_ok=True)
+    for cdir in chapter_dirs:
+        try:
+            target = final_dest / cdir.name
+            i = 1
+            while target.exists():
+                target = final_dest / f"{cdir.name}_{i}"
+                i += 1
+            cdir.rename(target)
+            print(f"[yt_download] Moved: {cdir.name} -> {target}")
+        except Exception:
+            # As a fallback, try copytree then remove
+            try:
+                import shutil
+                t = final_dest / cdir.name
+                i = 1
+                while t.exists():
+                    t = final_dest / f"{cdir.name}_{i}"
+                    i += 1
+                shutil.copytree(cdir, t)
+                shutil.rmtree(cdir)
+                print(f"[yt_download] Copied: {cdir.name} -> {t}")
+            except Exception:
+                pass
+
+    # If no chapter dirs were found, do not move sidecars blindly. Leave staging for inspection.
+    if not chapter_dirs:
+        print("[yt_download] Warning: No chapter folders were detected; leaving staging intact for manual review.")
+
+    # Cleanup staging dir only if we successfully identified and moved chapter folders
+    if chapter_dirs:
+        try:
+            import shutil
+            shutil.rmtree(stage_root)
+            print(f"[yt_download] Cleaned up staging: {stage_root}")
+        except Exception:
+            pass
 
 if __name__ == '__main__':
     raise SystemExit(run(sys.argv[1:]))

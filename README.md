@@ -102,6 +102,12 @@ RockSync includes a YouTube browser and downloader powered by yt‑dlp. You can 
     - Best audio (M4A): `python3 scripts/yt_download.py --dest "~/Music/YouTube" --preset audio-m4a https://youtu.be/ID1 https://youtu.be/ID2`
     - Use a saved profile: `python3 scripts/yt_download.py --dest "~/Music/YouTube" --profile-name "My FLAC" https://www.youtube.com/playlist?list=XXXX`
 
+  Note on split chapters + embedding:
+  - Using yt‑dlp’s `--split-chapters` together with `--embed-thumbnail` or `--embed-metadata` can corrupt the resulting chapter files in some cases (upstream behavior).
+  - RockSync prevents corruption by disabling in‑run embedding when split‑chapters are detected, writing sidecar files instead (`.info.json`, thumbnail).
+  - After download completes, RockSync post‑processes the split outputs: it stages downloads in a temp folder under the destination, embeds metadata and the correct per‑video thumbnail into each split file, moves the per‑video chapter folder(s) into the destination, and cleans up the temp folder.
+  - This flow gives you split chapters with embedded metadata and cover art reliably, without file corruption.
+
 - GUI: YouTube tab (`app/ui/youtube_pane.py`)
   - Search or open a playlist URL and scroll to load more; thumbnails, titles, channel and duration are shown
   - Enable “Use browser cookies” + choose a browser or point to a `cookies.txt` file to access private feeds (Home, Watch Later, Liked, My Playlists)

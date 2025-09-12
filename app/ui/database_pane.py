@@ -148,6 +148,7 @@ class DatabasePane(QWidget):
         def worker():
             count = 0
             updated = 0
+            deleted = 0
             try:
                 from mutagen import File as MFile  # noqa: F401
             except Exception as e:
@@ -162,6 +163,15 @@ class DatabasePane(QWidget):
                 pass
             conn = sqlite3.connect(db_path)
             try:
+                # Ensure schema exists
+                try:
+                    conn.execute("SELECT 1 FROM tracks LIMIT 1")
+                except Exception:
+                    try:
+                        self._ensure_schema()
+                    except Exception:
+                        pass
+
                 for rootd, _, files in os.walk(base):
                     for name in files:
                         if os.path.splitext(name)[1].lower() not in exts:
@@ -188,10 +198,29 @@ class DatabasePane(QWidget):
                         self._queue.put(("row", info))
                         count += 1
                         updated += 1
+                # Remove entries for files that no longer exist under the base
+                try:
+                    existing = conn.execute("SELECT path FROM tracks").fetchall()
+                except Exception:
+                    existing = []
+                base_norm = os.path.normpath(base)
+                for (p,) in existing:
+                    try:
+                        if not p:
+                            continue
+                        # Only consider files within the selected source root
+                        if not os.path.normpath(p).startswith(base_norm):
+                            continue
+                        if not os.path.exists(p):
+                            conn.execute("DELETE FROM tracks WHERE path=?", (p,))
+                            deleted += 1
+                    except Exception:
+                        # Best-effort; skip problematic rows
+                        continue
                 conn.commit()
             finally:
                 conn.close()
-            self._queue.put(("status", f"Scan complete. {count} files seen; {updated} updated."))
+            self._queue.put(("status", f"Scan complete. {count} files seen; {updated} updated; {deleted} removed."))
             self._queue.put(("end", count))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -242,6 +271,11 @@ class DatabasePane(QWidget):
                     self._is_scanning = False
                     self.scan_btn.setEnabled(True)
                     self.flush_timer.stop()
+                    # Reload from DB to reflect deletions and ensure table matches DB
+                    try:
+                        self.load_from_db()
+                    except Exception:
+                        pass
         except queue.Empty:
             pass
 

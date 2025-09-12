@@ -32,13 +32,13 @@ DEFAULT_SETTINGS = {
     "theme_file": "modern-light.css",
     # YouTube pane defaults (editable presets)
     "youtube_profiles": [
-        {"name": "Preset: Best Audio (m4a)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\""},
-        {"name": "Preset: Best Audio (flac)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" --audio-format flac"},
-        {"name": "Preset: Best Video (mp4)", "args": "-f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'"},
+        {"name": "Preset: Best Audio (m4a)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" --embed-thumbnail --embed-metadata"},
+        {"name": "Preset: Best Audio (flac)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" --audio-format flac --embed-thumbnail --embed-metadata"},
+        {"name": "Preset: Best Video (mp4)", "args": "-f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best' --embed-thumbnail --embed-metadata"},
         {"name": "Preset: Playlist Audio (indexed)",
-         "args": "--yes-playlist --extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" -o '%(playlist_title)s/%(playlist_index|02d)s. %(title)s.%(ext)s'"},
+         "args": "--yes-playlist --extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" -o '%(playlist_title)s/%(playlist_index|02d)s. %(title)s.%(ext)s' --embed-thumbnail --embed-metadata"},
         {"name": "Preset: Video Split Chapters",
-         "args": "--split-chapters -f \"ba[ext=m4a]/ba/bestaudio\" --extract-audio -o 'chapter:%(title)s/%(section_number|02d)s. %(section_title)s.%(ext)s'"},
+         "args": "--split-chapters -f \"ba[ext=m4a]/ba/bestaudio\" --extract-audio -o 'chapter:%(title)s/%(section_number|02d)s. %(section_title)s.%(ext)s' --embed-thumbnail --embed-metadata"},
     ],
     "youtube_last_profile": "",
     "youtube_default_dest": _default_music_root(),
