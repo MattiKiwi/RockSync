@@ -156,17 +156,13 @@ class AppWindow(QMainWindow):
         rb_layout.addWidget(self.rockbox)
         self.stack.addWidget(self.rockbox_tab)
 
-        # TIDAL Playlists (embed tidal-dl-ng GUI)
-        self.tidal_tab = QWidget(); td_layout = QVBoxLayout(self.tidal_tab)
-        self.tidal = TidalPane(self, self.tidal_tab)
-        td_layout.addWidget(self.tidal)
-        self.stack.addWidget(self.tidal_tab)
-
-        # YouTube (browse + download)
-        self.youtube_tab = QWidget(); yt_layout = QVBoxLayout(self.youtube_tab)
-        self.youtube = YouTubePane(self, self.youtube_tab)
-        yt_layout.addWidget(self.youtube)
-        self.stack.addWidget(self.youtube_tab)
+        # Optional add-ons (created conditionally)
+        self.tidal_tab = None
+        self.tidal = None
+        self.youtube_tab = None
+        self.youtube = None
+        self._ensure_tidal_tab()  # creates only if enabled in settings
+        self._ensure_youtube_tab()  # creates only if enabled in settings
 
         # Daily Mix (kept as a separate page)
         self.daily_tab = QWidget(); dl_layout = QVBoxLayout(self.daily_tab)
@@ -206,8 +202,10 @@ class AppWindow(QMainWindow):
         add_page("Settings", self.stack.indexOf(self.settings_tab))
         add_page("Rockbox", self.stack.indexOf(self.rockbox_tab))
         add_page("Advanced", self.stack.indexOf(self.run_tab))
-        add_page("Tidal-dl-ng", self.stack.indexOf(self.tidal_tab))
-        add_page("YouTube", self.stack.indexOf(self.youtube_tab))
+        if getattr(self, 'tidal_tab', None) is not None:
+            add_page("Tidal-dl-ng", self.stack.indexOf(self.tidal_tab))
+        if getattr(self, 'youtube_tab', None) is not None:
+            add_page("YouTube", self.stack.indexOf(self.youtube_tab))
 
         def on_nav_changed():
             it = self.nav.currentItem()
@@ -240,7 +238,7 @@ class AppWindow(QMainWindow):
         # Lazy-initialize heavy/online pages when shown
         def _on_page_changed(idx: int):
             try:
-                if idx == self.stack.indexOf(self.tidal_tab):
+                if getattr(self, 'tidal_tab', None) is not None and idx == self.stack.indexOf(self.tidal_tab):
                     # Initialize Tidal pane on demand to avoid startup failures
                     if hasattr(self, 'tidal'):
                         self.tidal.activate()
@@ -260,6 +258,96 @@ class AppWindow(QMainWindow):
         self.device_timer.setInterval(8000)
         self.device_timer.timeout.connect(self._update_device_indicator)
         self.device_timer.start()
+
+    # --------------- Add-on tabs management ---------------
+    def _ensure_tidal_tab(self):
+        try:
+            enabled = bool(self.settings.get('enable_tidal', False))
+        except Exception:
+            enabled = False
+        if enabled and self.tidal_tab is None:
+            try:
+                self.tidal_tab = QWidget(); td_layout = QVBoxLayout(self.tidal_tab)
+                self.tidal = TidalPane(self, self.tidal_tab)
+                td_layout.addWidget(self.tidal)
+                self.stack.addWidget(self.tidal_tab)
+            except Exception:
+                # If creation fails, ensure state remains consistent
+                self.tidal_tab = None
+                self.tidal = None
+        if not enabled and self.tidal_tab is not None:
+            try:
+                idx = self.stack.indexOf(self.tidal_tab)
+                if idx >= 0:
+                    self.stack.removeWidget(self.tidal_tab)
+                if hasattr(self, 'tidal') and self.tidal is not None:
+                    try:
+                        self.tidal.shutdown()
+                    except Exception:
+                        pass
+                self.tidal_tab.deleteLater()
+            except Exception:
+                pass
+            finally:
+                self.tidal_tab = None
+                self.tidal = None
+
+    def _ensure_youtube_tab(self):
+        try:
+            enabled = bool(self.settings.get('enable_youtube', False))
+        except Exception:
+            enabled = False
+        if enabled and self.youtube_tab is None:
+            try:
+                self.youtube_tab = QWidget(); yt_layout = QVBoxLayout(self.youtube_tab)
+                self.youtube = YouTubePane(self, self.youtube_tab)
+                yt_layout.addWidget(self.youtube)
+                self.stack.addWidget(self.youtube_tab)
+            except Exception:
+                self.youtube_tab = None
+                self.youtube = None
+        if not enabled and self.youtube_tab is not None:
+            try:
+                idx = self.stack.indexOf(self.youtube_tab)
+                if idx >= 0:
+                    self.stack.removeWidget(self.youtube_tab)
+                self.youtube_tab.deleteLater()
+            except Exception:
+                pass
+            finally:
+                self.youtube_tab = None
+                self.youtube = None
+
+    def _rebuild_navigation(self):
+        try:
+            self.nav.clear()
+        except Exception:
+            return
+        def add_page(text, page_index):
+            it = QListWidgetItem(text)
+            it.setData(Qt.UserRole, int(page_index))
+            self.nav.addItem(it)
+        add_page("Library", self.stack.indexOf(self.explore_tab))
+        add_page("Device", self.stack.indexOf(self.device_tab))
+        add_page("Search", self.stack.indexOf(self.search_tab))
+        add_page("Sync", self.stack.indexOf(self.sync_tab))
+        add_page("Playlists", self.stack.indexOf(self.daily_tab))
+        add_page("Database", self.stack.indexOf(self.db_tab))
+        add_page("Settings", self.stack.indexOf(self.settings_tab))
+        add_page("Rockbox", self.stack.indexOf(self.rockbox_tab))
+        add_page("Advanced", self.stack.indexOf(self.run_tab))
+        if getattr(self, 'tidal_tab', None) is not None:
+            add_page("Tidal-dl-ng", self.stack.indexOf(self.tidal_tab))
+        if getattr(self, 'youtube_tab', None) is not None:
+            add_page("YouTube", self.stack.indexOf(self.youtube_tab))
+        # Select first real page
+        for i in range(self.nav.count()):
+            try:
+                if self.nav.item(i).data(Qt.UserRole) is not None:
+                    self.nav.setCurrentRow(i)
+                    break
+            except Exception:
+                pass
 
     # --------------- Top bar helpers ---------------
     def _human_bytes(self, n: int) -> str:
@@ -372,6 +460,17 @@ class AppWindow(QMainWindow):
         self.set_lastfm = QLineEdit(self.settings.get("lastfm_key", ""))
         form.addRow("Last.fm API key", self.set_lastfm)
 
+        # Add-ons section
+        addons_group = QGroupBox("Add-ons")
+        addons_form = QFormLayout(addons_group)
+        self.enable_youtube_cb = QCheckBox("Show YouTube tab")
+        self.enable_youtube_cb.setChecked(bool(self.settings.get('enable_youtube', False)))
+        addons_form.addRow("YouTube", self.enable_youtube_cb)
+        self.enable_tidal_cb = QCheckBox("Show TIDAL tab")
+        self.enable_tidal_cb.setChecked(bool(self.settings.get('enable_tidal', False)))
+        addons_form.addRow("TIDAL", self.enable_tidal_cb)
+        v.addWidget(addons_group)
+
         # Advanced block (hidden by default)
         # Toggleable advanced options block
         self.advanced_group = QGroupBox("Advanced Options")
@@ -424,6 +523,8 @@ class AppWindow(QMainWindow):
         v.addWidget(btn_row)
 
     def on_save_settings(self):
+        before_youtube = bool(self.settings.get('enable_youtube', False))
+        before_tidal = bool(self.settings.get('enable_tidal', False))
         patch = {
             "music_root": self.set_music_root.text(),
             "lyrics_subdir": self.set_lyrics_subdir.text(),
@@ -438,6 +539,8 @@ class AppWindow(QMainWindow):
             "dummy_device_enabled": bool(self.dummy_enable_cb.isChecked()),
             "ffmpeg_path": self.set_ffmpeg_path.text(),
             "theme_file": self.theme_box.currentText(),
+            "enable_youtube": bool(self.enable_youtube_cb.isChecked()),
+            "enable_tidal": bool(self.enable_tidal_cb.isChecked()),
         }
         self.settings.update(patch)
         if save_settings(patch):
@@ -449,6 +552,11 @@ class AppWindow(QMainWindow):
             except Exception:
                 pass
             apply_theme(QApplication.instance(), self.settings.get('theme_file', 'system'))
+            # Apply add-on visibility without restart
+            if before_tidal != self.settings.get('enable_tidal', False) or before_youtube != self.settings.get('enable_youtube', False):
+                self._ensure_tidal_tab()
+                self._ensure_youtube_tab()
+                self._rebuild_navigation()
         else:
             QMessageBox.critical(self, "Settings", "Could not save settings. See logs.")
 
@@ -472,6 +580,12 @@ class AppWindow(QMainWindow):
         self.theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
         try:
             self.quick_theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
+        except Exception:
+            pass
+        # Reload add-on toggles
+        try:
+            self.enable_youtube_cb.setChecked(bool(self.settings.get('enable_youtube', False)))
+            self.enable_tidal_cb.setChecked(bool(self.settings.get('enable_tidal', False)))
         except Exception:
             pass
         self.statusBar().showMessage(f"Music root: {self.settings.get('music_root')}")

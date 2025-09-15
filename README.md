@@ -15,7 +15,10 @@ Recommended steps
   - `cd RockSync`
 - (Optional) Create and activate a virtualenv.
 - Install Python dependencies:
-  - `pip install PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng yt-dlp`
+  - Core: `pip install PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm`
+  - Optional (only if you enable tabs below):
+    - YouTube: `pip install yt-dlp`
+    - TIDAL: `pip install tidal-dl-ng`
 - Run the app from the repo root:
   - `python app/main.py`
 
@@ -25,6 +28,21 @@ First run: create the Library DB
 - This builds `music_index.sqlite3` next to `app/settings.json`. Several features (Search and Daily Mix) rely on this index.
 
 Settings live in `app/settings.json`. Logs are written to `logs/latest.log` and `logs/debug.log` (enable verbose logging in Settings). UI interactions are recorded in `logs/ui_state.log`.
+
+## Experimental Integrations (Optional Tabs)
+
+These integrations are off by default and hidden from the sidebar. Enable them in Settings → Add-ons.
+
+- YouTube: Browse and download with yt-dlp. Requires `yt-dlp` and optionally `ffmpeg` for audio extraction/format conversion. When enabled, a “YouTube” tab appears.
+- TIDAL: Embeds the upstream tidal-dl-ng GUI inside RockSync. Requires `tidal-dl-ng`. When enabled, a “Tidal-dl-ng” tab appears.
+
+Notes
+- External services change frequently and may break without notice. These tabs are provided on a best-effort, experimental basis.
+- If disabled (default), the tabs do not load at all and the extra dependencies are not required.
+
+Settings keys in `app/settings.json`:
+- `enable_youtube`: boolean (default `false`)
+- `enable_tidal`: boolean (default `false`)
 
 ## Capabilities
 

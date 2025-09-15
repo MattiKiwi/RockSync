@@ -30,6 +30,9 @@ DEFAULT_SETTINGS = {
     "lastfm_key": "",
     "debug": False,
     "theme_file": "modern-light.css",
+    # Optional add-ons visibility
+    "enable_youtube": False,
+    "enable_tidal": False,
     # YouTube pane defaults (editable presets)
     "youtube_profiles": [
         {"name": "Preset: Best Audio (m4a)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" --embed-thumbnail --embed-metadata"},
