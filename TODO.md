@@ -1,11 +1,11 @@
 # TODOs for RockSync
 
 ## 🔨 Core Features
-- [ ] **File/Folder Deletion**
-  - [ ] Add context menu actions in Explorer and Device views.
-  - [ ] Use `send2trash` where available, fallback to `os.remove` / `shutil.rmtree`.
-  - [ ] Add confirmation dialog before delete.
-  - [ ] Log deletions in the central logger.
+- [x] **File/Folder Deletion**
+  - [x] Add context menu actions in Explorer and Device views.
+  - [x] Use `send2trash` where available, fallback to `os.remove` / `shutil.rmtree`.
+  - [x] Add confirmation dialog before delete.
+  - [x] Log deletions in the central logger.
 
 - [ ] **Sync Improvements**
   - [ ] Add optional hash verification (xxhash/MD5).

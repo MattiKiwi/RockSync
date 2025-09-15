@@ -15,7 +15,7 @@ Recommended steps
   - `cd RockSync`
 - (Optional) Create and activate a virtualenv.
 - Install Python dependencies:
-  - Core: `pip install PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm`
+  - Core: `pip install PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm Send2Trash`
   - Optional (only if you enable tabs below):
     - YouTube: `pip install yt-dlp`
     - TIDAL: `pip install tidal-dl-ng`

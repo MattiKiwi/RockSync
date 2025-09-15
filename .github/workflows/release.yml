@@ -62,7 +62,7 @@ jobs:
 
       - name: Install build deps
         run: |
-          python -m pip install pyinstaller PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng yt-dlp
+          python -m pip install pyinstaller PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm tidal-dl-ng yt-dlp Send2Trash
 
       - name: Build with PyInstaller
         run: pyinstaller rocksync.spec

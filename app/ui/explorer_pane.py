@@ -281,21 +281,110 @@ class ExplorerPane(QWidget):
         if not item:
             return
         typ = item.text(1)
-        if typ != 'Folder':
-            return
-        folder_path = item.data(0, Qt.UserRole)
+        target_path = item.data(0, Qt.UserRole)
+
         menu = QMenu(self)
-        any_added = False
-        for task in self.controller.tasks:
-            if self.controller.task_accepts_folder(task):
-                any_added = True
-                action = menu.addAction(f"Use: {task['label']}")
-                action.triggered.connect(lambda _, t=task: self.controller.open_quick_task(t, folder_path))
-        if not any_added:
-            a = menu.addAction("No folder tasks found")
-            a.setEnabled(False)
+        # Context actions: for folders, include quick tasks; for both, include Delete
+        if typ == 'Folder':
+            any_added = False
+            for task in getattr(self.controller, 'tasks', []) or []:
+                try:
+                    if self.controller.task_accepts_folder(task):
+                        any_added = True
+                        action = menu.addAction(f"Use: {task['label']}")
+                        action.triggered.connect(lambda _, t=task, p=target_path: self.controller.open_quick_task(t, p))
+                except Exception:
+                    continue
+            if not any_added:
+                a = menu.addAction("No folder tasks found")
+                a.setEnabled(False)
+            menu.addSeparator()
+
+        del_action = menu.addAction("Delete…")
+        del_action.setToolTip("Move to Trash if available; otherwise delete permanently")
+        del_action.triggered.connect(lambda: self._on_delete_selection(item))
+
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
-        ui_log('explorer_right_click', folder_path=folder_path)
+        try:
+            ui_log('explorer_right_click', path=target_path, type=typ)
+        except Exception:
+            pass
+
+    def _on_delete_selection(self, clicked_item):
+        # Determine target list: if multiple selected and clicked is selected, delete all selected
+        sel = self.tree.selectedItems() or []
+        targets = []
+        if sel and clicked_item in sel:
+            targets = [i.data(0, Qt.UserRole) for i in sel]
+        else:
+            targets = [clicked_item.data(0, Qt.UserRole)] if clicked_item else []
+        targets = [p for p in targets if isinstance(p, str) and p]
+        if not targets:
+            return
+        self._confirm_and_delete(targets)
+
+    def _confirm_and_delete(self, paths):
+        # Build message
+        n = len(paths)
+        sample = os.path.basename(paths[0]) if n == 1 else f"{n} items"
+        msg = (
+            f"Are you sure you want to delete {sample}?\n\n"
+            "Items will be moved to Trash when possible. If Trash is not available, they will be deleted permanently."
+        )
+        ret = QMessageBox.warning(
+            self,
+            "Delete",
+            msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ret != QMessageBox.Yes:
+            return
+
+        # Try send2trash first, fallback to permanent delete
+        try:
+            from send2trash import send2trash  # type: ignore
+        except Exception:
+            send2trash = None  # type: ignore
+
+        import shutil
+        errors = []
+        for p in paths:
+            method = 'unknown'
+            try:
+                if send2trash is not None:
+                    send2trash(p)
+                    method = 'send2trash'
+                else:
+                    if os.path.isdir(p):
+                        shutil.rmtree(p)
+                        method = 'rmtree'
+                    else:
+                        os.remove(p)
+                        method = 'remove'
+                try:
+                    ui_log('delete_path', path=p, method=method)
+                except Exception:
+                    pass
+            except Exception as e:
+                errors.append((p, str(e)))
+                try:
+                    ui_log('delete_error', path=p, error=str(e))
+                except Exception:
+                    pass
+
+        # Refresh view
+        try:
+            self.navigate(self.explorer_path.text())
+        except Exception:
+            pass
+
+        if errors:
+            if len(errors) == 1:
+                p, e = errors[0]
+                QMessageBox.critical(self, "Delete Failed", f"Could not delete:\n{p}\n\n{e}")
+            else:
+                QMessageBox.critical(self, "Delete Failed", f"Failed to delete {len(errors)} items. See logs for details.")
 
     # Info panel
     def show_info(self, path):
