@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import hashlib
 import threading
 import queue
 from typing import Dict
@@ -90,13 +91,21 @@ class DatabasePane(QWidget):
                     duration_seconds INTEGER,
                     format TEXT,
                     mtime INTEGER,
-                    size INTEGER
+                    size INTEGER,
+                    md5 TEXT
                 )
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)")
+            # Ensure md5 column exists for older DBs
+            try:
+                cols = {row[1] for row in conn.execute("PRAGMA table_info(tracks)")}
+                if 'md5' not in cols:
+                    conn.execute("ALTER TABLE tracks ADD COLUMN md5 TEXT")
+            except Exception:
+                pass
 
     # ---------- Actions ----------
     def load_from_db(self):
@@ -194,6 +203,11 @@ class DatabasePane(QWidget):
                         info = self._extract_info(path)
                         info['mtime'] = mtime
                         info['size'] = size
+                        # Compute MD5 for verification, best-effort
+                        try:
+                            info['md5'] = self._compute_md5(path)
+                        except Exception:
+                            info['md5'] = None
                         self._upsert_row(conn, info)
                         self._queue.put(("row", info))
                         count += 1
@@ -228,8 +242,8 @@ class DatabasePane(QWidget):
     def _upsert_row(self, conn: sqlite3.Connection, info: Dict):
         conn.execute(
             """
-            INSERT INTO tracks (path, title, artist, album, albumartist, genre, track, disc, year, date, composer, comment, duration_seconds, format, mtime, size)
-            VALUES (:path, :title, :artist, :album, :albumartist, :genre, :track, :disc, :year, :date, :composer, :comment, :duration_seconds, :format, :mtime, :size)
+            INSERT INTO tracks (path, title, artist, album, albumartist, genre, track, disc, year, date, composer, comment, duration_seconds, format, mtime, size, md5)
+            VALUES (:path, :title, :artist, :album, :albumartist, :genre, :track, :disc, :year, :date, :composer, :comment, :duration_seconds, :format, :mtime, :size, :md5)
             ON CONFLICT(path) DO UPDATE SET
                 title=excluded.title,
                 artist=excluded.artist,
@@ -245,7 +259,8 @@ class DatabasePane(QWidget):
                 duration_seconds=excluded.duration_seconds,
                 format=excluded.format,
                 mtime=excluded.mtime,
-                size=excluded.size
+                size=excluded.size,
+                md5=COALESCE(excluded.md5, md5)
             """,
             info,
         )
@@ -361,6 +376,20 @@ class DatabasePane(QWidget):
             'duration_seconds': duration,
             'format': fmt,
         }
+
+    @staticmethod
+    def _compute_md5(path: str, chunk_size: int = 2 * 1024 * 1024) -> str | None:
+        try:
+            h = hashlib.md5()
+            with open(path, 'rb') as fh:
+                while True:
+                    chunk = fh.read(chunk_size)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return None
 
     def _insert_row(self, info: Dict):
         row = self.table.rowCount()

@@ -70,7 +70,21 @@ class AppWindow(QMainWindow):
         self.action_label = QLabel("Idle")
         self.action_label.setObjectName("ActionStatus")
         self.action_label.setStyleSheet("font-weight: 600; color: #0a7;")
+        # Prevent window from resizing on long status strings
+        self.action_label.setMinimumWidth(120)
+        self.action_label.setMaximumWidth(220)
         dg.addWidget(self.action_label)
+        # Action progress bar (overall task progress)
+        self.action_progress = QProgressBar()
+        self.action_progress.setObjectName("ActionProgress")
+        self.action_progress.setMaximumWidth(140)
+        self.action_progress.setMinimumWidth(120)
+        self.action_progress.setRange(0, 100)
+        self.action_progress.setValue(0)
+        self.action_progress.setTextVisible(True)
+        self.action_progress.setFormat("%p%")
+        self.action_progress.setVisible(False)
+        dg.addWidget(self.action_progress)
         # Device name + model
         self.device_label = QLabel("No device detected")
         self.device_label.setObjectName("DeviceLabel")
@@ -422,6 +436,43 @@ class AppWindow(QMainWindow):
             self.action_label.setStyleSheet("font-weight: 700; color: #b50;")
         else:
             self.action_label.setStyleSheet("font-weight: 600; color: #0a7;")
+
+    def _set_action_progress(self, percent: int | None, tooltip: str | None = None):
+        try:
+            # Hide when reset, show when active
+            if percent is None or (int(percent) <= 0 and not tooltip):
+                self.action_progress.setVisible(False)
+                self.action_progress.setValue(0)
+                self.action_progress.setToolTip("")
+                return
+            p = max(0, min(100, int(percent)))
+            self.action_progress.setValue(p)
+            self.action_progress.setVisible(True)
+            self.action_progress.setToolTip(str(tooltip) if tooltip else "")
+        except Exception:
+            pass
+
+    # Trigger a device DB scan by selecting the device in the Database pane
+    def _scan_device_db(self, mount_path: str):
+        try:
+            # Ensure sources include current devices
+            self.db._refresh_sources()
+            # Find matching device entry
+            combo = self.db.source_combo
+            target_idx = -1
+            for i in range(combo.count()):
+                data = combo.itemData(i)
+                if isinstance(data, dict) and data.get('type') == 'device':
+                    mp = (data.get('mount') or '').rstrip('/\\')
+                    if mp == mount_path.rstrip('/\\'):
+                        target_idx = i
+                        break
+            if target_idx >= 0:
+                combo.setCurrentIndex(target_idx)
+                self.db.scan_library()
+        except Exception:
+            # Best-effort; ignore UI errors here
+            pass
 
     # --------------- Settings tab ---------------
     def _build_settings_tab(self, parent: QWidget):

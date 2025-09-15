@@ -5,6 +5,8 @@ import shutil
 import threading
 import queue
 import sqlite3
+import time
+import hashlib
 from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QTextCursor
@@ -69,10 +71,9 @@ class SyncPane(QWidget):
 
         # Audio quality row
         qrow = QHBoxLayout(); qrow.addWidget(QLabel("Audio Quality:"))
-        self.quality_box = QComboBox(); self.quality_box.addItems([
-            "Original (no downsample)",
-            "16-bit 44.1 kHz (downsample FLAC)"
-        ])
+        self.quality_box = QComboBox()
+        self._build_quality_dropdown()
+        self.quality_box.currentIndexChanged.connect(self._on_quality_changed)
         qrow.addWidget(self.quality_box)
         help_btn = QPushButton("?"); help_btn.setFixedWidth(24); help_btn.setToolTip("Why downsample?")
         help_btn.clicked.connect(self._show_quality_help)
@@ -110,6 +111,13 @@ class SyncPane(QWidget):
         controls = QHBoxLayout(); controls.addStretch(1)
         self.run_btn = QPushButton("Start Sync"); self.run_btn.clicked.connect(self.start_sync); controls.addWidget(self.run_btn)
         self.stop_btn = QPushButton("Stop"); self.stop_btn.clicked.connect(self.stop_sync); controls.addWidget(self.stop_btn)
+        # Verify device row
+        self.verify_btn = QPushButton("Verify Device (MD5)")
+        self.verify_btn.setToolTip("Checks the entire device against the library using MD5; optionally auto-repairs mismatches.")
+        self.verify_btn.clicked.connect(self._verify_device_clicked)
+        controls.addWidget(self.verify_btn)
+        self.verify_fix_cb = QCheckBox("Auto-repair corrupted")
+        controls.addWidget(self.verify_fix_cb)
         root.addLayout(controls)
 
         # Log
@@ -126,7 +134,81 @@ class SyncPane(QWidget):
     def _show_quality_help(self):
         QMessageBox.information(self, "Audio Quality",
             "Some devices have slow storage or limited CPU. High-bitrate or high-resolution files can stutter.\n\n"
-            "Choosing '16-bit 44.1 kHz' will downsample supported formats (FLAC) after syncing on the device to improve playback stability.")
+            "Choosing a preset will downsample supported lossless formats (e.g., FLAC, WAV/AIFF, ALAC) on the device to improve playback stability.\n\n"
+            "You can also add a custom preset with specific bit-depth and sample rate.")
+
+    def _build_quality_dropdown(self):
+        self.quality_box.clear()
+        # First item is always Original / no downsample
+        self.quality_box.addItem("Original (no downsample)", None)
+        presets = []
+        try:
+            presets = list(self.controller.settings.get('downsample_presets') or [])
+        except Exception:
+            presets = []
+        # Add defined presets with dict as userData
+        for p in presets:
+            name = str(p.get('name') or '')
+            if not name:
+                continue
+            self.quality_box.addItem(name, {
+                'bits': int(p.get('bits') or 16),
+                'rate': int(p.get('rate') or 44100),
+            })
+        # Custom option
+        self.quality_box.addItem("Custom…", { 'custom': True })
+        # Select last used preset if available
+        last = str(self.controller.settings.get('downsample_last') or '')
+        if last:
+            idx = self.quality_box.findText(last)
+            if idx >= 0:
+                self.quality_box.setCurrentIndex(idx)
+
+    def _on_quality_changed(self, idx: int):
+        data = self.quality_box.currentData()
+        # Handle Custom… selection
+        if isinstance(data, dict) and data.get('custom'):
+            from PySide6.QtWidgets import QInputDialog
+            # Prompt: "bit-depth, sample-rate" e.g. "16,44100"
+            text, ok = QInputDialog.getText(self, "Custom Downsample Preset", "Enter bit-depth and sample-rate (e.g. 16,44100):")
+            if not ok or not text:
+                # Revert to Original
+                self.quality_box.setCurrentIndex(0)
+                return
+            try:
+                parts = [p.strip() for p in str(text).split(',')]
+                bits = int(parts[0])
+                rate = int(parts[1]) if len(parts) > 1 else 44100
+                if bits not in (16, 24):
+                    raise ValueError("bits must be 16 or 24")
+                if rate < 8000 or rate > 192000:
+                    raise ValueError("invalid sample-rate")
+            except Exception as e:
+                QMessageBox.warning(self, "Invalid Preset", f"Could not parse: {e}")
+                self.quality_box.setCurrentIndex(0)
+                return
+            name = f"Custom: {bits}-bit {rate/1000:.1f} kHz"
+            # Save to settings list and select
+            try:
+                from settings_store import save_settings
+                presets = list(self.controller.settings.get('downsample_presets') or [])
+                presets.append({ 'name': name, 'bits': bits, 'rate': rate })
+                self.controller.settings['downsample_presets'] = presets
+                self.controller.settings['downsample_last'] = name
+                save_settings({ 'downsample_presets': presets, 'downsample_last': name })
+            except Exception:
+                pass
+            self._build_quality_dropdown()
+            j = self.quality_box.findText(name)
+            self.quality_box.setCurrentIndex(j if j >= 0 else 0)
+        else:
+            # Persist last used
+            try:
+                from settings_store import save_settings
+                save_settings({ 'downsample_last': self.quality_box.currentText() })
+                self.controller.settings['downsample_last'] = self.quality_box.currentText()
+            except Exception:
+                pass
 
     def _show_cleanup_help(self):
         QMessageBox.information(self, "Post-sync Clean Up",
@@ -260,6 +342,99 @@ class SyncPane(QWidget):
                 srcp = Path(src); dstp = Path(dst)
                 copied = 0; skipped = 0; updated = 0
                 touched: list[Path] = []  # files newly copied/updated on device
+                src_for_dst: dict[str, Path] = {}  # map rel key -> source full path
+
+                def _md5_of_file(path: Path, chunk_size: int = 2 * 1024 * 1024) -> str | None:
+                    try:
+                        h = hashlib.md5()
+                        with open(path, 'rb') as fh:
+                            while True:
+                                b = fh.read(chunk_size)
+                                if not b:
+                                    break
+                                h.update(b)
+                        return h.hexdigest()
+                    except Exception:
+                        return None
+
+                def _load_md5_map(db_path: str, base: Path | None) -> dict[str, str]:
+                    m = {}
+                    if not db_path or not os.path.exists(db_path):
+                        return m
+                    try:
+                        with sqlite3.connect(db_path) as conn:
+                            cur = conn.execute("SELECT path, md5 FROM tracks")
+                            for p, h in cur.fetchall():
+                                if not p or not h:
+                                    continue
+                                try:
+                                    pp = Path(p)
+                                    rel = pp.relative_to(base) if base else pp
+                                except Exception:
+                                    rel = Path(p)
+                                key = str(rel).replace('\\', '/').lower()
+                                m[key] = str(h)
+                    except Exception:
+                        return {}
+                    return m
+
+                def _human(n: int) -> str:
+                    for unit in ['B','KB','MB','GB','TB']:
+                        if n < 1024 or unit == 'TB':
+                            return f"{n:.1f} {unit}" if unit != 'B' else f"{n} {unit}"
+                        n /= 1024
+                    return f"{n:.1f} TB"
+
+                def _copy_with_resume(src_file: Path, dst_file: Path, overall_start: float, totals: dict):
+                    nonlocal updated, copied
+                    src_size = src_file.stat().st_size
+                    dst_exists = dst_file.exists()
+                    dst_size = dst_file.stat().st_size if dst_exists else 0
+                    mode = 'ab' if dst_exists and dst_size < src_size and dst_size > 0 else 'wb'
+                    resumed = (mode == 'ab')
+                    # Update overall totals if not accounted yet (in case of resume)
+                    remaining = max(0, src_size - dst_size)
+                    # Stream copy with per-file progress and overall ETA
+                    chunk = 1024 * 1024
+                    last_update = 0.0
+                    file_done = dst_size
+                    try:
+                        with open(src_file, 'rb') as s, open(dst_file, mode) as d:
+                            if resumed:
+                                s.seek(dst_size)
+                            while not self._stop_flag:
+                                buf = s.read(chunk)
+                                if not buf:
+                                    break
+                                d.write(buf)
+                                file_done += len(buf)
+                                totals['done'] += len(buf)
+                                now = time.time()
+                                if now - last_update >= 0.25:
+                                    elapsed = max(0.001, now - overall_start)
+                                    speed = totals['done'] / elapsed
+                                    remain = max(0, totals['total'] - totals['done'])
+                                    eta = int(remain / speed) if speed > 0 else 0
+                                    overall_pct = (totals['done'] / totals['total'] * 100) if totals['total'] > 0 else 100
+                                    file_pct = (file_done / src_size * 100) if src_size > 0 else 100
+                                    tip = f"{src_file.name} — file {file_pct:.0f}% • overall {_human(totals['done'])}/{_human(totals['total'])} @ {_human(int(speed))}/s • ETA {eta}s"
+                                    self._queue.put(("progress", { 'pct': int(overall_pct), 'tip': tip }))
+                                    last_update = now
+                    except Exception as e:
+                        self._queue.put(("log", f"! Copy error: {src_file} -> {dst_file} : {e}\n"))
+                        return False
+                    # Set times and metadata
+                    try:
+                        shutil.copystat(src_file, dst_file, follow_symlinks=True)
+                    except Exception:
+                        pass
+                    if resumed:
+                        updated += 1
+                        self._queue.put(("log", f"~ resumed {src_file.relative_to(srcp)}\n"))
+                    else:
+                        copied += 1
+                        self._queue.put(("log", f"+ {src_file.relative_to(srcp)}\n"))
+                    return True
                 # Determine selection roots for partial mode
                 selected_roots: list[Path] = []
                 if self.mode_combo.currentIndex() == 1:
@@ -301,27 +476,80 @@ class SyncPane(QWidget):
                             add_from_root(r)
                     else:
                         add_from_root(srcp)
-                    # Copy only missing
-                    if not self._stop_flag:
-                        self._queue.put(("status", "Sync: copying files..."))
+                    # Attempt to load MD5 maps from DBs for verification
+                    lib_db = self._resolve_db_path('library', None)
+                    dev_db = self._resolve_db_path('device', dstp.parent)
+                    lib_md5 = _load_md5_map(lib_db, srcp) if lib_db else {}
+                    dev_md5 = _load_md5_map(dev_db, dstp) if dev_db else {}
+
+                    # Compute total bytes to copy for ETA
+                    total_bytes = 0
+                    files_plan: list[tuple[Path, Path, int]] = []  # (full, rel, remaining_bytes)
                     for full, rel in src_files:
+                        if self._stop_flag:
+                            break
+                        dst_file = dstp / rel
+                        src_size = 0
+                        try:
+                            src_size = full.stat().st_size
+                        except Exception:
+                            continue
+                        key = str(rel).replace('\\', '/').lower()
+                        lmd5 = lib_md5.get(key)
+                        dmd5 = dev_md5.get(key)
+                        if dst_file.exists():
+                            if lmd5 and dmd5 and lmd5 == dmd5:
+                                continue  # already identical
+                            try:
+                                dst_size = dst_file.stat().st_size
+                            except Exception:
+                                dst_size = 0
+                            if self.skip_existing_cb.isChecked() and dst_size >= src_size:
+                                # existing but cannot verify; skip
+                                continue
+                            remaining = max(0, src_size - max(0, dst_size))
+                        else:
+                            remaining = src_size
+                        if remaining > 0:
+                            total_bytes += remaining
+                            files_plan.append((full, rel, remaining))
+
+                    totals = { 'total': total_bytes, 'done': 0 }
+                    overall_start = time.time()
+                    if not self._stop_flag:
+                        self._queue.put(("status", f"Sync: copying…"))
+                        # Initialize progress bar
+                        self._queue.put(("progress", { 'pct': 0, 'tip': f"Planning {_human(total_bytes)} to copy" }))
+
+                    # Copy/Resume
+                    for full, rel, _remaining in files_plan:
                         if self._stop_flag:
                             break
                         dst_file = dstp / rel
                         dst_file.parent.mkdir(parents=True, exist_ok=True)
                         try:
-                            if not dst_file.exists():
-                                shutil.copy2(full, dst_file)
-                                copied += 1
-                                touched.append(dst_file)
-                                self._queue.put(("log", f"+ {rel}\n"))
+                            ok = _copy_with_resume(full, dst_file, overall_start, totals)
+                            if ok:
+                                # Verify hash if available
+                                key = str(rel).replace('\\', '/').lower()
+                                src_hash = lib_md5.get(key) or _md5_of_file(full)
+                                dst_hash = _md5_of_file(dst_file)
+                                if src_hash and dst_hash and src_hash != dst_hash:
+                                    self._queue.put(("log", f"! Hash mismatch: {rel}\n"))
+                                else:
+                                    touched.append(dst_file)
+                                    # record source mapping
+                                    try:
+                                        src_for_dst[key] = full
+                                    except Exception:
+                                        pass
                             else:
                                 skipped += 1
                         except Exception as e:
                             self._queue.put(("log", f"! {rel} : {e}\n"))
                 else:
                     # Mode 2: Add Missing (DB)
-                    self._queue.put(("status", "Sync: loading DBs..."))
+                    self._queue.put(("status", "Sync: loading DBs…"))
                     lib_db = self._resolve_db_path('library', None)
                     dev_db = self._resolve_db_path('device', dstp.parent)
                     if not lib_db or not os.path.exists(lib_db):
@@ -334,7 +562,7 @@ class SyncPane(QWidget):
                     dev_keys = self._load_db_keys(dev_db)
                     if self._stop_flag:
                         return
-                    self._queue.put(("status", "Sync: comparing libraries..."))
+                    self._queue.put(("status", "Sync: comparing libraries…"))
                     # Build relative path for copy based on source base
                     for (path, artist, album, title, seconds) in lib_rows:
                         if self._stop_flag:
@@ -358,19 +586,35 @@ class SyncPane(QWidget):
                         dst_file = dstp / rel
                         dst_file.parent.mkdir(parents=True, exist_ok=True)
                         try:
-                            if not dst_file.exists():
-                                shutil.copy2(str(full), str(dst_file))
-                                copied += 1
-                                touched.append(dst_file)
-                                self._queue.put(("log", f"+ {rel}\n"))
+                            # Resume/Copy with progress for DB mode as well
+                            # Build minimal totals context for ETA per file only
+                            src_size = full.stat().st_size if full.exists() else 0
+                            totals = { 'total': src_size, 'done': 0 }
+                            _copy_with_resume(full, dst_file, time.time(), totals)
+                            # Verify hash when possible (only if library DB has md5)
+                            try:
+                                with sqlite3.connect(lib_db) as conn:
+                                    row = conn.execute("SELECT md5 FROM tracks WHERE path=?", (str(full),)).fetchone()
+                                    src_hash = row[0] if row else None
+                            except Exception:
+                                src_hash = None
+                            dst_hash = _md5_of_file(dst_file)
+                            if src_hash and dst_hash and src_hash != dst_hash:
+                                self._queue.put(("log", f"! Hash mismatch: {rel}\n"))
                             else:
-                                skipped += 1
+                                touched.append(dst_file)
+                            # record source mapping
+                            try:
+                                key = str(rel).replace('\\', '/').lower()
+                                src_for_dst[key] = full
+                            except Exception:
+                                pass
                         except Exception as e:
                             self._queue.put(("log", f"! {rel} : {e}\n"))
 
                 # Delete extras if requested (only applicable to Full/Partial modes)
                 if self.delete_extras_cb.isChecked() and not self._stop_flag and mode_idx in (0, 1):
-                    self._queue.put(("status", "Sync: deleting extras..."))
+                    self._queue.put(("status", "Sync: deleting extras…"))
                     src_set = {rel.as_posix() for _, rel in src_files}
                     # Scope deletions: if partial, only under selected roots; otherwise whole dst
                     scopes: list[Path] = []
@@ -404,27 +648,32 @@ class SyncPane(QWidget):
                                         self._queue.put(("log", f"! del {rel}: {e}\n"))
 
                 # Optional downsample step
-                if not self._stop_flag and self.quality_box.currentIndex() == 1:
+                preset = self.quality_box.currentData()
+                if not self._stop_flag and isinstance(preset, dict) and ('bits' in preset and 'rate' in preset):
+                    bits = int(preset.get('bits') or 16)
+                    rate = int(preset.get('rate') or 44100)
                     self._queue.put(("status", "Sync: downsampling audio..."))
-                    self._queue.put(("log", "Downsampling FLAC to 16-bit/44.1kHz on device...\n"))
+                    self._queue.put(("log", f"Downsampling lossless audio to {bits}-bit/{rate/1000:.1f}kHz on device...\n"))
                     script = str(SCRIPTS_DIR / 'downsampler.py')
                     jobs = 0
                     try:
                         jobs = int(self.controller.settings.get('jobs', os.cpu_count() or 4))
                     except Exception:
                         jobs = os.cpu_count() or 4
-                    # Build list of touched FLAC files for targeted processing
-                    touched_flacs = [str(p) for p in touched if p.suffix.lower() == '.flac']
+                    # Build list of touched audio files (supported lossless extensions)
+                    touched_candidates = [
+                        str(p) for p in touched if p.suffix.lower() in {'.flac', '.wav', '.aif', '.aiff', '.m4a'}
+                    ]
                     list_file = None
-                    if touched_flacs:
+                    if touched_candidates:
                         try:
-                            list_file = dstp / ".sync_touched_flac.txt"
+                            list_file = dstp / ".sync_touched_audio.txt"
                             with open(list_file, 'w', encoding='utf-8') as fh:
-                                fh.write("\n".join(touched_flacs))
+                                fh.write("\n".join(touched_candidates))
                         except Exception:
                             list_file = None
                     try:
-                        cmd = [sys.executable, script, "-j", str(jobs)]
+                        cmd = [sys.executable, script, "-j", str(jobs), "--bits", str(bits), "--rate", str(rate)]
                         if list_file:
                             cmd.extend(["--files-from", str(list_file)])
                         else:
@@ -528,6 +777,82 @@ class SyncPane(QWidget):
                     except Exception:
                         pass
 
+                # Post-sync: verify copied files against library MD5 where applicable
+                try:
+                    preset = None
+                    try:
+                        preset = self.quality_box.currentData()
+                    except Exception:
+                        preset = None
+                    downsample_enabled = isinstance(preset, dict) and ('bits' in preset and 'rate' in preset)
+                    lossless_exts = {'.flac', '.wav', '.aif', '.aiff', '.m4a'}
+                    # Load library MD5s once
+                    lib_db = self._resolve_db_path('library', None)
+                    lib_md5 = _load_md5_map(lib_db, srcp) if lib_db else {}
+                    mismatches = []
+                    fixed = []
+                    failed = []
+                    for dst_path in touched:
+                        try:
+                            rel = dst_path.relative_to(dstp)
+                        except Exception:
+                            continue
+                        # Skip verification for potentially transformed lossless files
+                        if downsample_enabled and dst_path.suffix.lower() in lossless_exts:
+                            continue
+                        key = str(rel).replace('\\', '/').lower()
+                        src_hash = lib_md5.get(key)
+                        if not src_hash:
+                            continue
+                        dst_hash = _md5_of_file(dst_path)
+                        if dst_hash and dst_hash != src_hash:
+                            mismatches.append(rel)
+                            # Attempt automatic replacement from source
+                            try:
+                                src_full = src_for_dst.get(key) or (srcp / rel)
+                                # Overwrite destination with fresh copy
+                                shutil.copy2(str(src_full), str(dst_path))
+                                # Re-verify
+                                new_hash = _md5_of_file(dst_path)
+                                if new_hash == src_hash:
+                                    fixed.append(rel)
+                                else:
+                                    failed.append(rel)
+                            except Exception:
+                                failed.append(rel)
+                    if mismatches:
+                        msg = []
+                        msg.append(f"Detected {len(mismatches)} corrupted files (MD5 mismatch).")
+                        if fixed:
+                            msg.append(f"Replaced {len(fixed)} successfully.")
+                        if failed:
+                            msg.append(f"Failed to replace {len(failed)} file(s). See log for details.")
+                        self._queue.put(("log", "! " + " ".join(msg) + "\n"))
+                        # Detailed list limited in log
+                        for r in mismatches[:50]:
+                            self._queue.put(("log", f"  - {r}\n"))
+                        if len(mismatches) > 50:
+                            self._queue.put(("log", f"  … and {len(mismatches)-50} more\n"))
+                        # Popup on UI thread
+                        try:
+                            self._queue.put(("popup", {
+                                'title': 'Corrupted files detected',
+                                'text': "\n".join(msg)
+                            }))
+                        except Exception:
+                            pass
+                    else:
+                        self._queue.put(("log", "MD5 verification passed for all copied files.\n"))
+                except Exception as e:
+                    self._queue.put(("log", f"MD5 verification skipped: {e}\n"))
+
+                # Trigger device DB re-scan on UI thread (after any downsampling/cleanup)
+                try:
+                    self._queue.put(("status", "Sync: indexing device…"))
+                    self._queue.put(("index_device", { 'mount': str(dstp.parent) }))
+                except Exception:
+                    pass
+
                 self._queue.put(("log", f"Done. copied={copied}, updated={updated}, skipped={skipped}\n"))
             finally:
                 self._queue.put(("end", None))
@@ -583,6 +908,205 @@ class SyncPane(QWidget):
         except Exception:
             pass
 
+    # ---- Full-device verification ----
+    def _verify_device_clicked(self):
+        mp = self.device_combo.currentData()
+        if not (mp and os.path.isdir(mp)):
+            self._append("Select a connected device.\n")
+            return
+        dst = mp.rstrip('/\\') + '/Music'
+        if not os.path.isdir(dst):
+            self._append("Device has no Music folder.\n")
+            return
+        auto_fix = self.verify_fix_cb.isChecked()
+        self._append(f"Starting device verification (auto-repair={'on' if auto_fix else 'off'})…\n")
+        self.controller._set_action_status("Verify: preparing…", True)
+        self.timer.start()
+
+        def worker():
+            try:
+                src_base = Path(self.src_edit.text().strip() or '')
+                dstp = Path(dst)
+                lib_db = self._resolve_db_path('library', None)
+                if not (lib_db and os.path.exists(lib_db)):
+                    self._queue.put(("log", "! Library DB not found. Run a library scan first.\n"))
+                    return
+                self._queue.put(("status", "Verify: loading library index…"))
+                # Build library maps: by relative path (under src base) and by basename fallback
+                lib_rel_md5: dict[str, tuple[str, str]] = {}
+                lib_name_map: dict[str, list[tuple[str, str]]] = {}
+                try:
+                    with sqlite3.connect(lib_db) as conn:
+                        cur = conn.execute("SELECT path, IFNULL(md5,'') FROM tracks")
+                        for p, h in cur.fetchall():
+                            if not p:
+                                continue
+                            ap = str(p)
+                            md5v = (h or '').strip()
+                            base = os.path.basename(ap).lower()
+                            lib_name_map.setdefault(base, []).append((ap, md5v))
+                            # add relative if within src base
+                            try:
+                                rel = str(Path(ap).resolve().relative_to(src_base.resolve())).replace('\\','/').lower()
+                                if rel:
+                                    lib_rel_md5[rel] = (ap, md5v)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                if not lib_name_map:
+                    self._queue.put(("log", "! Library DB has no MD5/path data. Re-scan the library.\n"))
+                    return
+                # Walk entire device filesystem
+                self._queue.put(("status", "Verify: scanning device files…"))
+                inc_exts = {e.lower() for e in self.ext_edit.text().split() if e.startswith('.')}
+                all_files: list[Path] = []
+                for rootd, _, files in os.walk(dstp):
+                    for name in files:
+                        ext = os.path.splitext(name)[1].lower()
+                        if inc_exts and ext not in inc_exts:
+                            continue
+                        all_files.append(Path(rootd) / name)
+                bad = 0; fixed = 0; failed = 0; missing_src = 0
+                total_rows = len(all_files)
+                processed = 0
+                last_tick = 0.0
+                last_log = 0.0
+                start_ts = time.time()
+                self._queue.put(("progress", { 'pct': 0, 'tip': f"Preparing… {total_rows} files" }))
+                # Helper to compute source MD5 on the fly when DB lacks it
+                def _md5_file(p: Path) -> str | None:
+                    try:
+                        h = hashlib.md5()
+                        with open(p, 'rb') as fh:
+                            while True:
+                                b = fh.read(2 * 1024 * 1024)
+                                if not b:
+                                    break
+                                h.update(b)
+                        return h.hexdigest()
+                    except Exception:
+                        return None
+                for dfile in all_files:
+                    if self._stop_flag:
+                        break
+                    processed += 1
+                    try:
+                        if not dfile.exists():
+                            continue
+                        # Compute md5 of device file
+                        try:
+                            dh = hashlib.md5()
+                            with open(dfile, 'rb') as fh:
+                                while True:
+                                    buf = fh.read(2 * 1024 * 1024)
+                                    if not buf:
+                                        break
+                                    dh.update(buf)
+                            dmd5 = dh.hexdigest()
+                        except Exception:
+                            dmd5 = None
+                        # Match by relative path or basename fallback
+                        try:
+                            rel = str(dfile.resolve().relative_to(dstp.resolve())).replace('\\','/').lower()
+                        except Exception:
+                            rel = dfile.name.lower()
+                        src_path = None; src_md5 = None
+                        if rel in lib_rel_md5:
+                            src_path, src_md5 = lib_rel_md5.get(rel) or (None, None)
+                        if not src_md5 and src_path and Path(src_path).exists():
+                            # Compute expected MD5 from library file when missing in DB
+                            try:
+                                src_md5 = _md5_file(Path(src_path))
+                            except Exception:
+                                src_md5 = None
+                        if not src_md5:
+                            candidates = lib_name_map.get(dfile.name.lower()) or []
+                            if candidates:
+                                src_path, src_md5 = candidates[0]
+                                if (not src_md5) and src_path and Path(src_path).exists():
+                                    try:
+                                        src_md5 = _md5_file(Path(src_path))
+                                    except Exception:
+                                        src_md5 = None
+                        if not dmd5 or not src_md5 or dmd5 == src_md5:
+                            # periodic progress update
+                            now = time.time()
+                            if now - last_tick >= 0.25:
+                                pct = int((processed / total_rows) * 100) if total_rows else 100
+                                tip = f"{dfile.name} — {processed}/{total_rows} • corrupted {bad} • fixed {fixed}"
+                                self._queue.put(("progress", { 'pct': pct, 'tip': tip }))
+                                # Also write a concise progress line to the log occasionally
+                                if now - last_log >= 2.0:
+                                    elapsed = max(0.001, now - start_ts)
+                                    rate = processed / elapsed
+                                    remaining = max(0, total_rows - processed)
+                                    eta_s = int(remaining / rate) if rate > 0 else 0
+                                    self._queue.put(("log", f"… {processed}/{total_rows} ({pct}%) verified; corrupted={bad}, fixed={fixed}; ETA ~{eta_s}s\n"))
+                                    last_log = now
+                                last_tick = now
+                            continue
+                        # Mismatch
+                        bad += 1
+                        self._queue.put(("log", f"! Corrupted: {dfile} (device md5 {dmd5}); expecting {src_md5 or 'unknown'}\n"))
+                        if auto_fix:
+                            # Try to copy from library
+                            sp = Path(src_path) if src_path else None
+                            if not (sp and sp.exists()) and rel:
+                                try:
+                                    sp = (src_base / rel)
+                                except Exception:
+                                    sp = None
+                            if sp.exists():
+                                try:
+                                    shutil.copy2(str(sp), str(dfile))
+                                    # Recompute md5
+                                    nh = hashlib.md5()
+                                    with open(dfile, 'rb') as fh:
+                                        while True:
+                                            buf = fh.read(2 * 1024 * 1024)
+                                            if not buf:
+                                                break
+                                            nh.update(buf)
+                                    if nh.hexdigest() == src_md5:
+                                        fixed += 1
+                                        self._queue.put(("log", f"  → Replaced OK from {sp}\n"))
+                                    else:
+                                        failed += 1
+                                        self._queue.put(("log", f"  → Replace failed (md5 mismatch after copy)\n"))
+                                except Exception as e:
+                                    failed += 1
+                                    self._queue.put(("log", f"  → Replace error: {e}\n"))
+                            else:
+                                missing_src += 1
+                                self._queue.put(("log", f"  → Source not found for {dfile.name}\n"))
+                        # Notify for this corrupted file
+                        try:
+                            detail = f"Corrupted file: {dfile.name}"
+                            if auto_fix:
+                                detail += "\nAuto-repair attempted."
+                            self._queue.put(("popup", { 'title': 'Corruption detected', 'text': detail }))
+                        except Exception:
+                            pass
+                        # progress tick after handling corruption
+                        try:
+                            pct = int((processed / total_rows) * 100) if total_rows else 100
+                            tip = f"{dfile.name} — {processed}/{total_rows} • corrupted {bad} • fixed {fixed}"
+                            self._queue.put(("progress", { 'pct': pct, 'tip': tip }))
+                        except Exception:
+                            pass
+                    except Exception:
+                        continue
+                summary = f"Verify complete. scanned={total_rows}, corrupted={bad}, fixed={fixed}, failed={failed}, missing_source={missing_src}\n"
+                self._queue.put(("log", summary))
+                # Popup summary
+                self._queue.put(("popup", { 'title': 'Device Verification', 'text': summary.strip() }))
+            finally:
+                self._queue.put(("end", None))
+
+        self._worker = threading.Thread(target=worker, daemon=True)
+        self._worker.start()
+
     def _append(self, text: str):
         self.log.moveCursor(QTextCursor.End)
         self.log.insertPlainText(text)
@@ -599,11 +1123,45 @@ class SyncPane(QWidget):
                         self.controller._set_action_status(str(payload), True)
                     except Exception:
                         pass
+                elif kind == 'popup':
+                    try:
+                        title = 'Notice'
+                        text = ''
+                        if isinstance(payload, dict):
+                            title = str(payload.get('title') or title)
+                            text = str(payload.get('text') or '')
+                        QMessageBox.warning(self, title, text)
+                    except Exception:
+                        pass
+                elif kind == 'index_device':
+                    try:
+                        mount = None
+                        if isinstance(payload, dict):
+                            mount = payload.get('mount')
+                        if mount:
+                            self.controller._scan_device_db(str(mount))
+                    except Exception:
+                        pass
+                elif kind == 'progress':
+                    try:
+                        pct = 0
+                        tip = None
+                        if isinstance(payload, dict):
+                            pct = int(payload.get('pct') or 0)
+                            tip = payload.get('tip')
+                        elif isinstance(payload, (tuple, list)) and payload:
+                            pct = int(payload[0])
+                            tip = payload[1] if len(payload) > 1 else None
+                        self.controller._set_action_progress(pct, tip)
+                    except Exception:
+                        pass
                 elif kind == 'end':
                     self.run_btn.setEnabled(True)
                     self.timer.stop()
                     try:
                         self.controller._set_action_status("Idle", False)
+                        # Hide and reset the top-bar progress bar
+                        self.controller._set_action_progress(None, None)
                     except Exception:
                         pass
                     break

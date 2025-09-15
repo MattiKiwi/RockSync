@@ -33,6 +33,12 @@ DEFAULT_SETTINGS = {
     # Optional add-ons visibility
     "enable_youtube": False,
     "enable_tidal": False,
+    # Downsampling presets (user-editable)
+    "downsample_presets": [
+        {"name": "16-bit 44.1 kHz (lossless)", "bits": 16, "rate": 44100},
+        {"name": "16-bit 48 kHz (lossless)", "bits": 16, "rate": 48000},
+    ],
+    "downsample_last": "16-bit 44.1 kHz (lossless)",
     # YouTube pane defaults (editable presets)
     "youtube_profiles": [
         {"name": "Preset: Best Audio (m4a)", "args": "--extract-audio -f \"ba[ext=m4a]/ba/bestaudio\" --embed-thumbnail --embed-metadata"},

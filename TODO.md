@@ -7,12 +7,12 @@
   - [x] Add confirmation dialog before delete.
   - [x] Log deletions in the central logger.
 
-- [ ] **Sync Improvements**
-  - [ ] Add optional hash verification (xxhash/MD5).
-  - [ ] Support resumable transfers for large files.
-  - [ ] Parallel copy with bounded worker pool, progress per file, overall ETA.
-  - [ ] Policies for automatic downsampling per-device capacity or remaining free space.
-  - [ ] Gapless playback checks (verify encoder settings/tags).
+- [x] **Sync Improvements**
+  - [x] Add hash verification (MD5) using db (device and library).
+  - [x] Support resumable transfers for large files.
+  - [x] Progress per file, overall ETA.
+  - [x] Add more policies for automatic downsampling, including other file formats not just flac (scripts/downsampler.py).
+  - [x] Check for corruption on sync.
 
 - [ ] **Conflict Awareness**
   - [ ] Show diffs for modified/renamed files.
@@ -20,8 +20,7 @@
 
 - [ ] **Integrity Tools**
   - [ ] ReplayGain / loudness scanning.
-  - [ ] Playlist dedupe, bulk `.m3u8` creation, convert folders to playlists.
-  - [ ] Read/write Rockbox dynamic playlist files (`.tcd`).
+  - [ ] Song dedupe, option convert folders to playlists if song is present on device.
 
 ## ⚙️ Settings & Configuration
 - [x] **Optional Tabs**
@@ -47,7 +46,6 @@
 ## 🎨 UX & Media
 - [ ] **Explorer Improvements**
   - [ ] Central thumbnail cache on disk for faster loads.
-  - [ ] Show embedded vs. sidecar cover/lyrics.
 
 - [ ] **Device UX**
   - [ ] Long-path support (Windows).
@@ -60,7 +58,6 @@
 
 - [ ] **Daily Mix / Smart Playlists**
   - [ ] Expose advanced weighting (recency, skip history, per-genre quotas).
-  - [ ] Export directly to device playlists.
 
 - [ ] **YouTube Enhancements**
   - [ ] Add queue manager with per-item status, retries, and space check.
