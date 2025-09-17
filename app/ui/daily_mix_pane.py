@@ -3,13 +3,13 @@ import sqlite3
 import time
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QFileDialog, QMessageBox, QCheckBox, QGroupBox,
-    QTableWidget, QTableWidgetItem
+    QTableWidget, QTableWidgetItem, QToolButton, QListWidget, QAbstractItemView
 )
 
 from core import CONFIG_PATH
@@ -54,8 +54,17 @@ class DailyMixPane(QWidget):
         root.addLayout(out_row)
 
         # Auto Generator group
-        auto_group = QGroupBox("Auto Generator")
-        auto_v = QVBoxLayout(auto_group)
+        self.auto_toggle = QToolButton()
+        self.auto_toggle.setText("Auto Generator")
+        self.auto_toggle.setCheckable(True)
+        self.auto_toggle.setChecked(True)
+        self.auto_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.auto_toggle.setArrowType(Qt.DownArrow)
+        root.addWidget(self.auto_toggle)
+
+        self.auto_group = QGroupBox()
+        self.auto_group.setTitle("")
+        auto_v = QVBoxLayout(self.auto_group)
         # Mix options row 1
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Mix name:"))
@@ -81,13 +90,74 @@ class DailyMixPane(QWidget):
         self.genre_mode = QComboBox(); self.genre_mode.addItems(["Random", "Pick"]) 
         self.genre_mode.currentIndexChanged.connect(self._on_genre_mode_changed)
         row2.addWidget(self.genre_mode)
+        self.anchor_label = QLabel("Anchors:")
+        row2.addWidget(self.anchor_label)
         self.anchor_count = QSpinBox(); self.anchor_count.setRange(1, 6); self.anchor_count.setValue(3)
-        row2.addWidget(QLabel("Anchors:"))
         row2.addWidget(self.anchor_count)
-        self.genre_pick = QComboBox(); self.genre_pick.setEnabled(False)
-        row2.addWidget(QLabel("Genre:"))
-        row2.addWidget(self.genre_pick, 1)
         auto_v.addLayout(row2)
+
+        self.genre_controls = QWidget()
+        genre_layout = QHBoxLayout(self.genre_controls)
+        genre_layout.setContentsMargins(0, 0, 0, 0)
+
+        avail_layout = QVBoxLayout()
+        avail_layout.addWidget(QLabel("Available genres:"))
+        self.genre_available = QListWidget()
+        self.genre_available.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.genre_available.setMinimumHeight(150)
+        self.genre_available.itemDoubleClicked.connect(self._on_available_genre_double_clicked)
+        avail_layout.addWidget(self.genre_available)
+        genre_layout.addLayout(avail_layout, 2)
+
+        btn_layout = QVBoxLayout()
+        self.btn_anchor_add = QPushButton("→ Anchors")
+        self.btn_anchor_add.clicked.connect(self._add_selected_anchors)
+        btn_layout.addWidget(self.btn_anchor_add)
+        self.btn_blacklist_add = QPushButton("→ Blacklist")
+        self.btn_blacklist_add.clicked.connect(self._add_selected_blacklist)
+        btn_layout.addWidget(self.btn_blacklist_add)
+        btn_layout.addStretch(1)
+        genre_layout.addLayout(btn_layout)
+
+        self.anchor_container = QWidget()
+        anchor_layout = QVBoxLayout(self.anchor_container)
+        anchor_layout.addWidget(QLabel("Selected anchors:"))
+        self.genre_anchor = QListWidget()
+        self.genre_anchor.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.genre_anchor.setMinimumHeight(150)
+        self.genre_anchor.itemDoubleClicked.connect(lambda _: self._remove_selected_from_list(self.genre_anchor))
+        anchor_layout.addWidget(self.genre_anchor)
+        anchor_btns = QHBoxLayout()
+        self.btn_anchor_remove = QPushButton("Remove")
+        self.btn_anchor_remove.clicked.connect(lambda: self._remove_selected_from_list(self.genre_anchor))
+        anchor_btns.addWidget(self.btn_anchor_remove)
+        self.btn_anchor_clear = QPushButton("Clear")
+        self.btn_anchor_clear.clicked.connect(lambda: self.genre_anchor.clear())
+        anchor_btns.addWidget(self.btn_anchor_clear)
+        anchor_btns.addStretch(1)
+        anchor_layout.addLayout(anchor_btns)
+        genre_layout.addWidget(self.anchor_container, 1)
+
+        self.blacklist_container = QWidget()
+        blacklist_layout = QVBoxLayout(self.blacklist_container)
+        blacklist_layout.addWidget(QLabel("Blacklisted genres:"))
+        self.genre_blacklist = QListWidget()
+        self.genre_blacklist.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.genre_blacklist.setMinimumHeight(150)
+        self.genre_blacklist.itemDoubleClicked.connect(lambda _: self._remove_selected_from_list(self.genre_blacklist))
+        blacklist_layout.addWidget(self.genre_blacklist)
+        blacklist_btns = QHBoxLayout()
+        self.btn_blacklist_remove = QPushButton("Remove")
+        self.btn_blacklist_remove.clicked.connect(lambda: self._remove_selected_from_list(self.genre_blacklist))
+        blacklist_btns.addWidget(self.btn_blacklist_remove)
+        self.btn_blacklist_clear = QPushButton("Clear")
+        self.btn_blacklist_clear.clicked.connect(lambda: self.genre_blacklist.clear())
+        blacklist_btns.addWidget(self.btn_blacklist_clear)
+        blacklist_btns.addStretch(1)
+        blacklist_layout.addLayout(blacklist_btns)
+        genre_layout.addWidget(self.blacklist_container, 1)
+
+        auto_v.addWidget(self.genre_controls)
 
         # Actions row
         act_row = QHBoxLayout()
@@ -98,11 +168,20 @@ class DailyMixPane(QWidget):
         act_row.addWidget(self.status, 1)
         auto_v.addLayout(act_row)
 
-        root.addWidget(auto_group)
+        root.addWidget(self.auto_group)
 
         # Manual Playlists group
-        manual_group = QGroupBox("Manual Playlists")
-        man_v = QVBoxLayout(manual_group)
+        self.manual_toggle = QToolButton()
+        self.manual_toggle.setText("Manual Playlists")
+        self.manual_toggle.setCheckable(True)
+        self.manual_toggle.setChecked(True)
+        self.manual_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.manual_toggle.setArrowType(Qt.DownArrow)
+        root.addWidget(self.manual_toggle)
+
+        self.manual_group = QGroupBox()
+        self.manual_group.setTitle("")
+        man_v = QVBoxLayout(self.manual_group)
 
         # Manual source row
         man_src = QHBoxLayout()
@@ -176,7 +255,14 @@ class DailyMixPane(QWidget):
         man_row1.addWidget(b_create)
         man_v.addLayout(man_row1)
 
-        root.addWidget(manual_group, 1)
+        root.addWidget(self.manual_group, 1)
+
+        self._on_genre_mode_changed()
+
+        self.auto_toggle.toggled.connect(self._toggle_auto_section)
+        self.manual_toggle.toggled.connect(self._toggle_manual_section)
+        self._toggle_auto_section(self.auto_toggle.isChecked())
+        self._toggle_manual_section(self.manual_toggle.isChecked())
 
         # Storage for manual selection
         self._manual_files: List[str] = []
@@ -185,6 +271,110 @@ class DailyMixPane(QWidget):
         self._refresh_manual_sources()
 
     # ---------- Helpers ----------
+    def _toggle_auto_section(self, expanded: bool):
+        self._set_section_visible(self.auto_group, self.auto_toggle, expanded)
+
+    def _toggle_manual_section(self, expanded: bool):
+        self._set_section_visible(self.manual_group, self.manual_toggle, expanded)
+
+    @staticmethod
+    def _set_section_visible(container: QWidget, toggle: QToolButton, expanded: bool):
+        if container is not None:
+            container.setVisible(bool(expanded))
+        if toggle is not None:
+            toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+
+    @staticmethod
+    def _set_list_items(widget: QListWidget, items: List[str]):
+        widget.blockSignals(True)
+        widget.clear()
+        for g in dict.fromkeys(items):
+            widget.addItem(g)
+        widget.blockSignals(False)
+
+    @staticmethod
+    def _selected_genres(widget: QListWidget) -> List[str]:
+        return [it.text().strip() for it in widget.selectedItems() if (it.text() or '').strip()]
+
+    @staticmethod
+    def _list_contains(widget: QListWidget, genre: str) -> bool:
+        return bool(widget.findItems(genre, Qt.MatchFixedString))
+
+    def _add_genres_to_list(self, widget: QListWidget, genres: Iterable[str]) -> List[str]:
+        added: List[str] = []
+        for g in genres:
+            if not g:
+                continue
+            if not self._list_contains(widget, g):
+                widget.addItem(g)
+                added.append(g)
+        return added
+
+    @staticmethod
+    def _remove_genres_from_list(widget: QListWidget, genres: Iterable[str]) -> List[str]:
+        removed: List[str] = []
+        for g in genres:
+            if not g:
+                continue
+            items = widget.findItems(g, Qt.MatchFixedString)
+            for it in items:
+                row = widget.row(it)
+                widget.takeItem(row)
+                removed.append(g)
+        return removed
+
+    def _remove_selected_from_list(self, widget: QListWidget) -> List[str]:
+        genres = self._selected_genres(widget)
+        return self._remove_genres_from_list(widget, genres)
+
+    def _current_anchor_genres(self) -> List[str]:
+        return [self.genre_anchor.item(i).text().strip() for i in range(self.genre_anchor.count()) if self.genre_anchor.item(i) and self.genre_anchor.item(i).text().strip()]
+
+    def _current_blacklist_genres(self) -> List[str]:
+        return [self.genre_blacklist.item(i).text().strip() for i in range(self.genre_blacklist.count()) if self.genre_blacklist.item(i) and self.genre_blacklist.item(i).text().strip()]
+
+    def _add_selected_anchors(self):
+        if self.genre_mode.currentText().lower() != 'pick':
+            return
+        selected = self._selected_genres(self.genre_available)
+        added = self._add_genres_to_list(self.genre_anchor, selected)
+        if added:
+            self._remove_genres_from_list(self.genre_blacklist, added)
+
+    def _add_selected_blacklist(self):
+        selected = self._selected_genres(self.genre_available)
+        added = self._add_genres_to_list(self.genre_blacklist, selected)
+        if added:
+            self._remove_genres_from_list(self.genre_anchor, added)
+
+    def _on_available_genre_double_clicked(self, item):
+        if not item:
+            return
+        genre = (item.text() or '').strip()
+        if not genre:
+            return
+        if self.genre_mode.currentText().lower() == 'pick':
+            added = self._add_genres_to_list(self.genre_anchor, [genre])
+            if added:
+                self._remove_genres_from_list(self.genre_blacklist, added)
+        else:
+            added = self._add_genres_to_list(self.genre_blacklist, [genre])
+            if added:
+                self._remove_genres_from_list(self.genre_anchor, added)
+
+    @staticmethod
+    def _filter_blacklisted_tracks(rows: List[Dict], blacklist: Iterable[str]) -> List[Dict]:
+        banned = { (b or '').strip().lower() for b in (blacklist or []) if (b or '').strip() }
+        if not banned:
+            return list(rows)
+        filtered: List[Dict] = []
+        for r in rows:
+            tokens = {t.strip().lower() for t in DailyMixPane._split_genre_tokens(r.get('genre', '')) if t.strip()}
+            if tokens & banned:
+                continue
+            filtered.append(r)
+        return filtered
+
     def _refresh_sources(self):
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
@@ -243,8 +433,15 @@ class DailyMixPane(QWidget):
 
     def _on_genre_mode_changed(self):
         pick = (self.genre_mode.currentText().lower() == 'pick')
-        self.genre_pick.setEnabled(pick)
+        self.anchor_container.setVisible(pick)
+        self.btn_anchor_add.setVisible(pick)
+        self.btn_anchor_remove.setVisible(pick)
+        self.btn_anchor_clear.setVisible(pick)
+        self.anchor_label.setVisible(not pick)
+        self.anchor_count.setVisible(not pick)
         self.anchor_count.setEnabled(not pick)
+        if not pick:
+            self.genre_anchor.clearSelection()
 
     def _browse_out_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Select output folder", self.out_dir.text() or self._selected_base_folder() or "")
@@ -310,11 +507,20 @@ class DailyMixPane(QWidget):
             except Exception:
                 pass
         genres = sorted(set(genres), key=lambda s: s.lower())
+        previous_anchors = self._current_anchor_genres()
+        previous_blacklist = self._current_blacklist_genres()
+
         self._genres = genres
-        self.genre_pick.blockSignals(True)
-        self.genre_pick.clear()
-        self.genre_pick.addItems(self._genres)
-        self.genre_pick.blockSignals(False)
+
+        self.genre_available.blockSignals(True)
+        self.genre_available.clear()
+        for g in self._genres:
+            self.genre_available.addItem(g)
+        self.genre_available.sortItems()
+        self.genre_available.blockSignals(False)
+
+        self._set_list_items(self.genre_anchor, [g for g in previous_anchors if g in self._genres])
+        self._set_list_items(self.genre_blacklist, [g for g in previous_blacklist if g in self._genres])
 
     @staticmethod
     def _fmt_duration(secs):
@@ -379,16 +585,24 @@ class DailyMixPane(QWidget):
             QMessageBox.warning(self, "Daily Mix", "No tracks found in the index for the selected source.")
             return
 
+        blacklist = self._current_blacklist_genres()
+        usable_tracks = self._filter_blacklisted_tracks(tracks, blacklist)
+        if not usable_tracks:
+            QMessageBox.warning(self, "Daily Mix", "All tracks were excluded by the blacklist.")
+            return
+
         # Determine anchors
         anchors: List[str] = []
-        if self.genre_mode.currentText().lower() == 'pick':
-            g = self.genre_pick.currentText().strip()
-            if not g:
-                QMessageBox.warning(self, "Daily Mix", "Please pick a genre or select Random mode.")
+        pick_mode = (self.genre_mode.currentText().lower() == 'pick')
+        if pick_mode:
+            anchors = self._current_anchor_genres()
+            if not anchors:
+                QMessageBox.warning(self, "Daily Mix", "Please add at least one anchor genre or use Random mode.")
                 return
-            anchors = [g]
         else:
-            anchors = self._choose_anchor_genres(tracks, self.anchor_count.value())
+            anchors = self._choose_anchor_genres(usable_tracks, self.anchor_count.value(), blacklist)
+            if not anchors:
+                anchors = self._choose_anchor_genres(usable_tracks, max(1, self.anchor_count.value()))
 
         per_artist_max = self.per_artist_max.value()
         fresh_days = self.fresh_days.value() or None
@@ -401,7 +615,7 @@ class DailyMixPane(QWidget):
 
         wrote = 0
         for i in range(mix_count):
-            mix = self._build_mix(tracks, anchors, total_min, per_artist_max, fresh_days)
+            mix = self._build_mix(usable_tracks, anchors, total_min, per_artist_max, fresh_days)
             if not mix:
                 break
             mix_name = name if mix_count == 1 else f"{name} #{i+1}"
@@ -501,13 +715,16 @@ class DailyMixPane(QWidget):
 
     # ---------- Mix utilities (local) ----------
     @staticmethod
-    def _choose_anchor_genres(rows: List[Dict], n: int) -> List[str]:
+    def _choose_anchor_genres(rows: List[Dict], n: int, blacklist: Optional[Iterable[str]] = None) -> List[str]:
+        banned = { (b or '').strip().lower() for b in (blacklist or []) if (b or '').strip() }
         freq: Dict[str, int] = {}
         for r in rows:
             g = (r.get('genre') or '').strip()
             toks = DailyMixPane._split_genre_tokens(g)
             for t in toks:
                 if not DailyMixPane._is_valid_genre(t):
+                    continue
+                if (t or '').strip().lower() in banned:
                     continue
                 freq[t] = freq.get(t, 0) + 1
         ranked = sorted(freq.items(), key=lambda kv: kv[1], reverse=True)

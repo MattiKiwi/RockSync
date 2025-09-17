@@ -638,6 +638,8 @@ def parse_args():
     ap.add_argument("--per-artist-max", type=int, default=2, help="Max tracks from the same artist in a mix.")
     ap.add_argument("--fresh-days", type=int, default=None, help="Boost tracks modified within N days.")
     ap.add_argument("--seed", type=int, default=None, help="Base random seed for reproducibility.")
+    ap.add_argument("--blacklist-genre", action="append", dest="blacklist_genres", default=[],
+                    help="Genre token to exclude (case-insensitive). May be used multiple times.")
 
     # New:
     ap.add_argument("--daily-seed", dest="daily_seed", action="store_true", default=True,
@@ -683,6 +685,19 @@ def main():
     for t in tracks:
         if t.genre_tokens is None:
             t.genre_tokens = {x.lower() for x in _split_genre_tokens(t.genre)}
+
+    raw_blacklist: List[str] = []
+    for entry in (args.blacklist_genres or []):
+        if not entry:
+            continue
+        parts = re.split(r"[;,]", entry) if any(sep in entry for sep in ",;") else [entry]
+        raw_blacklist.extend([p.strip().lower() for p in parts if p.strip()])
+    blacklist_tokens = {g for g in raw_blacklist if g}
+    if blacklist_tokens:
+        tracks = [t for t in tracks if not ((t.genre_tokens or set()) & blacklist_tokens)]
+        if not tracks:
+            print("No tracks remain after applying the genre blacklist.")
+            return
 
     # Optional legacy anchors support (if user passed --genres)
     provided = [g for g in (args.genres or []) if is_valid_genre(str(g))]

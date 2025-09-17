@@ -3,7 +3,7 @@ import sqlite3
 import hashlib
 import threading
 import queue
-from typing import Dict
+from typing import Dict, List
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -149,6 +149,8 @@ class DatabasePane(QWidget):
         if not base or not os.path.isdir(base):
             self.status_label.setText("Select a valid source (Library or Device) and ensure the path exists.")
             return
+        source_data = self.source_combo.currentData()
+        is_device_scan = isinstance(source_data, dict) and source_data.get('type') == 'device'
         self._is_scanning = True
         self.scan_btn.setEnabled(False)
         self.status_label.setText("Scanning source and updating index…")
@@ -158,6 +160,7 @@ class DatabasePane(QWidget):
             count = 0
             updated = 0
             deleted = 0
+            pending_md5: List[str] = []
             try:
                 from mutagen import File as MFile  # noqa: F401
             except Exception as e:
@@ -194,7 +197,7 @@ class DatabasePane(QWidget):
                         size = int(getattr(st, 'st_size', 0))
                         # Check existing
                         try:
-                            row = conn.execute("SELECT mtime, size FROM tracks WHERE path=?", (path,)).fetchone()
+                            row = conn.execute("SELECT mtime, size, md5 FROM tracks WHERE path=?", (path,)).fetchone()
                         except Exception:
                             row = None
                         if row and row[0] == mtime and row[1] == size:
@@ -203,11 +206,16 @@ class DatabasePane(QWidget):
                         info = self._extract_info(path)
                         info['mtime'] = mtime
                         info['size'] = size
-                        # Compute MD5 for verification, best-effort
-                        try:
-                            info['md5'] = self._compute_md5(path)
-                        except Exception:
-                            info['md5'] = None
+                        if is_device_scan:
+                            # Defer MD5 hashing for device scans to keep the UI responsive
+                            info['md5'] = ''
+                            pending_md5.append(path)
+                        else:
+                            # Compute MD5 for verification, best-effort
+                            try:
+                                info['md5'] = self._compute_md5(path)
+                            except Exception:
+                                info['md5'] = None
                         self._upsert_row(conn, info)
                         self._queue.put(("row", info))
                         count += 1
@@ -234,7 +242,11 @@ class DatabasePane(QWidget):
                 conn.commit()
             finally:
                 conn.close()
-            self._queue.put(("status", f"Scan complete. {count} files seen; {updated} updated; {deleted} removed."))
+            status_msg = f"Scan complete. {count} files seen; {updated} updated; {deleted} removed."
+            if is_device_scan and pending_md5:
+                status_msg += f" Hashing {len(pending_md5)} files in background."
+                self._schedule_md5_backfill(db_path, pending_md5)
+            self._queue.put(("status", status_msg))
             self._queue.put(("end", count))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -397,6 +409,43 @@ class DatabasePane(QWidget):
         vals = [info.get('artist',''), info.get('album',''), info.get('title',''), info.get('genre',''), info.get('duration',''), info.get('path','')]
         for col, val in enumerate(vals):
             self.table.setItem(row, col, QTableWidgetItem(str(val)))
+
+    def _schedule_md5_backfill(self, db_path: str, paths: List[str]):
+        safe_paths = [p for p in paths if p]
+        if not safe_paths:
+            return
+
+        def backfill():
+            try:
+                conn = sqlite3.connect(db_path)
+            except Exception:
+                return
+            try:
+                try:
+                    conn.execute('BEGIN')
+                except Exception:
+                    pass
+                updated = 0
+                for idx, track_path in enumerate(safe_paths, 1):
+                    md5_value = self._compute_md5(track_path) or ''
+                    try:
+                        conn.execute("UPDATE tracks SET md5=? WHERE path=?", (md5_value, track_path))
+                        updated += 1
+                    except Exception:
+                        continue
+                    if idx % 25 == 0:
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+            finally:
+                conn.close()
+
+        threading.Thread(target=backfill, daemon=True).start()
 
     @staticmethod
     def _fmt_duration(secs: int) -> str:

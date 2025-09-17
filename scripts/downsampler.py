@@ -141,12 +141,9 @@ def main():
         candidates = find_candidate_files(args.source)
     print(f"🔍 Found {len(candidates)} candidate files. Starting conversion with {args.jobs} processes to {args.bits}-bit/{args.rate/1000:.1f}kHz...")
 
-    # Partial function-like wrapper to pass extra args
-    def _runner(file_path: str):
-        return downsample_lossless(file_path, args.bits, args.rate)
-
+    work = [(path, args.bits, args.rate) for path in candidates]
     with Pool(args.jobs) as pool:
-        pool.map(_runner, candidates)
+        pool.starmap(downsample_lossless, work)
 
     print("✅ All conversions completed.")
 
