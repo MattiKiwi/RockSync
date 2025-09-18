@@ -32,6 +32,18 @@ def get_tasks():
             "bin_deps": [],
         },
         {
+            "id": "prune_genres",
+            "label": "Keep First Genre",
+            "script": SCRIPTS_DIR / "prune_genres.py",
+            "args": [
+                {"key": "--folder", "label": "Folder", "type": "path", "default": str(ROOT)},
+                {"key": "--ext", "label": "Extensions (space-separated)", "type": "text", "default": ".mp3 .flac .m4a .aac .ogg .opus .wav .wv .aiff .ape .mpc"},
+                {"key": "--dry-run", "label": "Dry Run", "type": "bool", "default": True},
+            ],
+            "py_deps": ["mutagen"],
+            "bin_deps": [],
+        },
+        {
             "id": "sort_by_artist",
             "label": "Sort Folders by Artist",
             "script": SCRIPTS_DIR / "sort_by_artist.py",

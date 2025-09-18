@@ -3,7 +3,8 @@ import sqlite3
 import hashlib
 import threading
 import queue
-from typing import Dict, List
+import time
+from typing import Dict, List, Any
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -184,60 +185,132 @@ class DatabasePane(QWidget):
                     except Exception:
                         pass
 
+                def _norm_path(p: str) -> str:
+                    try:
+                        return os.path.normcase(os.path.normpath(p))
+                    except Exception:
+                        return p
+
+                base_real = os.path.normpath(base)
+                existing_map: Dict[str, tuple[str, int, int, Any]] = {}
+                try:
+                    cur = conn.execute("SELECT path, mtime, size, md5 FROM tracks")
+                    for path_val, mtime_val, size_val, md5_val in cur:
+                        if not path_val:
+                            continue
+                        norm_candidate = _norm_path(path_val)
+                        try:
+                            in_scope = os.path.commonpath([base_real, os.path.normpath(path_val)]) == base_real
+                        except Exception:
+                            in_scope = False
+                        if not in_scope:
+                            continue
+                        existing_map[norm_candidate] = (
+                            path_val,
+                            int(mtime_val or 0),
+                            int(size_val or 0),
+                            md5_val,
+                        )
+                except Exception:
+                    existing_map = {}
+
+                try:
+                    conn.execute('BEGIN')
+                except Exception:
+                    pass
+
+                batch: List[Dict[str, Any]] = []
+
+                def flush_batch():
+                    if batch:
+                        self._queue.put(("rows", batch.copy()))
+                        batch.clear()
+
+                candidates: List[str] = []
                 for rootd, _, files in os.walk(base):
                     for name in files:
                         if os.path.splitext(name)[1].lower() not in exts:
                             continue
-                        path = os.path.join(rootd, name)
-                        try:
-                            st = os.stat(path)
-                        except Exception:
-                            continue
-                        mtime = int(getattr(st, 'st_mtime', 0))
-                        size = int(getattr(st, 'st_size', 0))
-                        # Check existing
-                        try:
-                            row = conn.execute("SELECT mtime, size, md5 FROM tracks WHERE path=?", (path,)).fetchone()
-                        except Exception:
-                            row = None
-                        if row and row[0] == mtime and row[1] == size:
-                            count += 1
-                            continue  # unchanged
-                        info = self._extract_info(path)
-                        info['mtime'] = mtime
-                        info['size'] = size
-                        if is_device_scan:
-                            # Defer MD5 hashing for device scans to keep the UI responsive
-                            info['md5'] = ''
-                            pending_md5.append(path)
-                        else:
-                            # Compute MD5 for verification, best-effort
-                            try:
-                                info['md5'] = self._compute_md5(path)
-                            except Exception:
-                                info['md5'] = None
-                        self._upsert_row(conn, info)
-                        self._queue.put(("row", info))
+                        candidates.append(os.path.join(rootd, name))
+
+                total_candidates = len(candidates)
+                if total_candidates == 0:
+                    print(f"[scan] No supported audio files found under {base}", flush=True)
+                start_time = time.time()
+
+                def format_eta(seconds: float) -> str:
+                    try:
+                        seconds = max(0, int(seconds))
+                    except Exception:
+                        return "?"
+                    hours, rem = divmod(seconds, 3600)
+                    minutes, secs = divmod(rem, 60)
+                    if hours:
+                        return f"{hours:d}h{minutes:02d}m"
+                    if minutes:
+                        return f"{minutes:d}m{secs:02d}s"
+                    return f"{secs}s"
+
+                def log_progress(idx: int, path: str, status: str):
+                    if total_candidates <= 0:
+                        print(f"[scan] {status}: {path}", flush=True)
+                        return
+                    elapsed = time.time() - start_time
+                    eta_text = ""
+                    if idx < total_candidates and idx > 0:
+                        rate = elapsed / idx if idx else 0
+                        if rate > 0:
+                            remaining = total_candidates - idx
+                            eta = rate * remaining
+                            eta_text = f", ETA {format_eta(eta)}"
+                    print(f"[scan] {idx}/{total_candidates} {status}: {path}{eta_text}", flush=True)
+
+                for idx, path in enumerate(candidates, 1):
+                    try:
+                        st = os.stat(path)
+                    except Exception:
+                        log_progress(idx, path, "error: stat failed")
+                        continue
+                    mtime = int(getattr(st, 'st_mtime', 0))
+                    size = int(getattr(st, 'st_size', 0))
+                    norm_path = _norm_path(path)
+                    row = existing_map.pop(norm_path, None)
+                    if row and row[1] == mtime and row[2] == size:
                         count += 1
-                        updated += 1
+                        log_progress(idx, path, "skip")
+                        continue  # unchanged
+                    info = self._extract_info(path)
+                    info['mtime'] = mtime
+                    info['size'] = size
+                    if is_device_scan:
+                        # Defer MD5 hashing for device scans to keep the UI responsive
+                        info['md5'] = ''
+                        pending_md5.append(path)
+                    else:
+                        # Compute MD5 for verification, best-effort
+                        try:
+                            info['md5'] = self._compute_md5(path)
+                        except Exception:
+                            info['md5'] = None
+                    self._upsert_row(conn, info)
+                    batch.append(info)
+                    if len(batch) >= 32:
+                        flush_batch()
+                    count += 1
+                    updated += 1
+                    log_progress(idx, path, "update")
+                flush_batch()
+
                 # Remove entries for files that no longer exist under the base
-                try:
-                    existing = conn.execute("SELECT path FROM tracks").fetchall()
-                except Exception:
-                    existing = []
-                base_norm = os.path.normpath(base)
-                for (p,) in existing:
+                for _, (p, _mt, _sz, _md5) in list(existing_map.items()):
                     try:
                         if not p:
                             continue
-                        # Only consider files within the selected source root
-                        if not os.path.normpath(p).startswith(base_norm):
+                        if os.path.exists(p):
                             continue
-                        if not os.path.exists(p):
-                            conn.execute("DELETE FROM tracks WHERE path=?", (p,))
-                            deleted += 1
+                        conn.execute("DELETE FROM tracks WHERE path=?", (p,))
+                        deleted += 1
                     except Exception:
-                        # Best-effort; skip problematic rows
                         continue
                 conn.commit()
             finally:
@@ -246,6 +319,7 @@ class DatabasePane(QWidget):
             if is_device_scan and pending_md5:
                 status_msg += f" Hashing {len(pending_md5)} files in background."
                 self._schedule_md5_backfill(db_path, pending_md5)
+            print(f"[scan] {status_msg}", flush=True)
             self._queue.put(("status", status_msg))
             self._queue.put(("end", count))
 
@@ -281,17 +355,20 @@ class DatabasePane(QWidget):
         try:
             while True:
                 kind, payload = self._queue.get_nowait()
-                if kind == 'row':
-                    info = payload
-                    row_info = {
-                        'artist': info.get('artist',''),
-                        'album': info.get('album',''),
-                        'title': info.get('title',''),
-                        'genre': info.get('genre',''),
-                        'duration': self._fmt_duration(info.get('duration_seconds') or 0),
-                        'path': info.get('path',''),
-                    }
-                    self._insert_row(row_info)
+                if kind in ('row', 'rows'):
+                    infos = payload if kind == 'rows' else [payload]
+                    if not isinstance(infos, list):
+                        infos = [infos]
+                    for info in infos:
+                        row_info = {
+                            'artist': info.get('artist',''),
+                            'album': info.get('album',''),
+                            'title': info.get('title',''),
+                            'genre': info.get('genre',''),
+                            'duration': self._fmt_duration(info.get('duration_seconds') or 0),
+                            'path': info.get('path',''),
+                        }
+                        self._insert_row(row_info)
                 elif kind == 'status':
                     self.status_label.setText(str(payload))
                 elif kind == 'end':
@@ -312,64 +389,108 @@ class DatabasePane(QWidget):
         fmt = os.path.splitext(path)[1].lower().lstrip('.')
         try:
             from mutagen import File as MFile
-            audio = MFile(path)
-            if audio is not None:
-                try:
-                    easy = MFile(path, easy=True)
-                except Exception:
-                    easy = None
-                tags = getattr(easy, 'tags', None) or getattr(audio, 'tags', None) or {}
+            easy = full = None
+            try:
+                easy = MFile(path, easy=True)
+            except Exception:
+                easy = None
+            try:
+                full = MFile(path) if easy is None or getattr(easy, 'tags', None) is None else easy
+            except Exception:
+                full = None if easy is None else easy
 
-                def first(key, default=""):
+            tag_sources: List[Any] = []
+            for candidate in (easy, getattr(easy, 'tags', None), full, getattr(full, 'tags', None)):
+                if candidate is None:
+                    continue
+                if candidate in tag_sources:
+                    continue
+                tag_sources.append(candidate)
+
+            def _coerce_values(value: Any) -> List[str]:
+                if value is None:
+                    return []
+                if isinstance(value, (list, tuple, set)):
+                    out: List[str] = []
+                    for item in value:
+                        out.extend(_coerce_values(item))
+                    return out
+                if hasattr(value, 'text'):
                     try:
-                        v = tags.get(key)
-                        return (v[0] if isinstance(v, list) and v else v) or default
+                        return _coerce_values(getattr(value, 'text'))
                     except Exception:
-                        return default
+                        pass
+                text = str(value).strip()
+                return [text] if text else []
 
-                def all_values(key) -> list:
-                    try:
-                        v = tags.get(key)
-                        if v is None:
-                            return []
-                        if isinstance(v, list):
-                            return [str(x) for x in v if str(x).strip()]
-                        s = str(v)
-                        return [s] if s.strip() else []
-                    except Exception:
-                        return []
-
-                artist = first('artist', artist)
-                album = first('album', album)
-                title = first('title', os.path.basename(path))
-                albumartist = first('albumartist', albumartist)
-                # Collect all genres and store them joined by '; '
-                genres_list = all_values('genre')
-                if not genres_list:
-                    genre = genre
-                else:
-                    # normalize whitespace and dedupe while preserving order
-                    seen = set()
-                    norm = []
-                    for g in genres_list:
-                        gs = g.strip()
-                        if not gs:
+            def _get_values(keys) -> List[str]:
+                if isinstance(keys, str):
+                    keys = (keys,)
+                found: List[str] = []
+                for source in tag_sources:
+                    for key in keys:
+                        val = None
+                        try:
+                            val = source.get(key)  # type: ignore[attr-defined]
+                        except Exception:
+                            try:
+                                val = source[key]  # type: ignore[index]
+                            except Exception:
+                                val = None
+                        if val is None:
                             continue
-                        if gs not in seen:
-                            seen.add(gs)
-                            norm.append(gs)
+                        vals = _coerce_values(val)
+                        for v in vals:
+                            if v not in found:
+                                found.append(v)
+                return found
+
+            def first(keys, default=""):
+                vals = _get_values(keys)
+                return vals[0] if vals else default
+
+            def all_values(keys) -> List[str]:
+                return _get_values(keys)
+
+            artist = first(('artist', 'ARTIST', 'Author', 'TPE1', '©ART'), artist)
+            album = first(('album', 'ALBUM', 'TALB', '©alb'), album)
+            title = first(('title', 'TITLE', 'TIT2', '©nam'), os.path.basename(path))
+            albumartist = first(('albumartist', 'ALBUMARTIST', 'TPE2', 'aART'), albumartist)
+
+            genres_list = all_values(('genre', 'GENRE', 'TCON', '©gen'))
+            if genres_list:
+                seen = set()
+                norm = []
+                for g in genres_list:
+                    gs = g.strip()
+                    if not gs:
+                        continue
+                    if gs.lower() not in seen:
+                        seen.add(gs.lower())
+                        norm.append(gs)
+                if norm:
                     genre = "; ".join(norm)
-                track = str(first('tracknumber', "")).split('/')[0]
-                disc = str(first('discnumber', "")).split('/')[0]
-                year = first('year', year)
-                date = first('date', date)
-                composer = first('composer', composer)
-                comment = first('comment', comment)
+
+            track_raw = first(('tracknumber', 'TRACKNUMBER', 'TRCK', 'track'), "")
+            if track_raw:
+                track = str(track_raw).split('/', 1)[0]
+            disc_raw = first(('discnumber', 'DISCNUMBER', 'TPOS'), "")
+            if disc_raw:
+                disc = str(disc_raw).split('/', 1)[0]
+            year = first(('year', 'TYER', 'TDRC', 'DATE', '©day'), year)
+            date = first(('date', 'TDRC', 'TDRL', 'TYER', '©day'), date)
+            composer = first(('composer', 'TCOM', '©wrt'), composer)
+            comment = first(('comment', 'COMM', '©cmt'), comment)
+
+            for cand in (easy, full):
+                info_obj = getattr(cand, 'info', None)
                 try:
-                    if getattr(audio, 'info', None) and getattr(audio.info, 'length', None):
-                        duration = int(audio.info.length)
+                    if info_obj and getattr(info_obj, 'length', None):
+                        length_val = int(info_obj.length)
+                        if length_val > 0:
+                            duration = max(duration, length_val)
                 except Exception:
-                    pass
+                    continue
         except Exception:
             pass
         return {

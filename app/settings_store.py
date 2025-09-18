@@ -54,6 +54,9 @@ DEFAULT_SETTINGS = {
     "youtube_use_cookies": False,
     "youtube_cookie_browser": "firefox",
     "youtube_cookie_file": "",
+    # Daily Mix genre presets
+    "daily_mix_genre_presets": [],
+    "daily_mix_last_preset": "",
 }
 
 

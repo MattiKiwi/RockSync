@@ -735,7 +735,10 @@ class AppWindow(QMainWindow):
         if key == "--lyrics-subdir":
             return s.get("lyrics_subdir", spec.get("default", "Lyrics"))
         if key == "--ext":
-            return s.get("lyrics_ext", spec.get("default", ".lrc"))
+            default_value = spec.get("default", "")
+            if str(default_value).strip().lower() == ".lrc":
+                return s.get("lyrics_ext", default_value)
+            return default_value
         return spec.get("default", "")
 
     def populate_form(self, task):

@@ -3,16 +3,163 @@ import sqlite3
 import time
 import random
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QFileDialog, QMessageBox, QCheckBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QToolButton, QListWidget, QAbstractItemView
+    QTableWidget, QTableWidgetItem, QToolButton, QListWidget, QAbstractItemView,
+    QScrollArea, QDialog, QDialogButtonBox, QPlainTextEdit
 )
 
 from core import CONFIG_PATH
+from settings_store import save_settings
+
+
+def _parse_preset_genres_text(text: str) -> List[str]:
+    tokens: List[str] = []
+    for chunk in str(text or '').replace(';', ',').replace('\n', ',').split(','):
+        val = chunk.strip()
+        if val:
+            tokens.append(val)
+    return list(dict.fromkeys(tokens))
+
+
+class GenrePresetEditorDialog(QDialog):
+    def __init__(self, presets: List[Dict[str, str]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Genre Presets")
+        self.resize(560, 360)
+        self._presets: List[Dict[str, str]] = [
+            {"name": str(p.get("name", "")).strip(), "genres": str(p.get("genres", "")).strip()}
+            for p in (presets or [])
+        ]
+
+        layout = QVBoxLayout(self)
+
+        main = QHBoxLayout()
+        layout.addLayout(main, 1)
+
+        self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.SingleSelection)
+        main.addWidget(self.list, 0)
+
+        form = QVBoxLayout()
+        main.addLayout(form, 1)
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name:"))
+        self.name_edit = QLineEdit()
+        name_row.addWidget(self.name_edit, 1)
+        form.addLayout(name_row)
+
+        form.addWidget(QLabel("Allowed genres (comma-separated):"))
+        self.genres_edit = QPlainTextEdit()
+        self.genres_edit.setPlaceholderText("pop, europop, dance-pop")
+        form.addWidget(self.genres_edit, 1)
+
+        btn_row = QHBoxLayout()
+        self.add_btn = QPushButton("Add")
+        self.add_btn.clicked.connect(self._on_add)
+        btn_row.addWidget(self.add_btn)
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.clicked.connect(self._on_remove)
+        btn_row.addWidget(self.remove_btn)
+        btn_row.addStretch(1)
+        form.addLayout(btn_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.list.currentRowChanged.connect(self._on_selection_changed)
+        self.name_edit.textChanged.connect(self._on_name_changed)
+        self.genres_edit.textChanged.connect(self._on_genres_changed)
+
+        self._reload_list()
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self._update_form_enabled()
+
+    def _reload_list(self):
+        self.list.blockSignals(True)
+        self.list.clear()
+        for preset in self._presets:
+            name = preset.get("name") or "Preset"
+            self.list.addItem(name)
+        self.list.blockSignals(False)
+
+    def _on_selection_changed(self, row: int):
+        if row is None or row < 0 or row >= len(self._presets):
+            self.name_edit.blockSignals(True)
+            self.genres_edit.blockSignals(True)
+            self.name_edit.clear()
+            self.genres_edit.clear()
+            self.name_edit.blockSignals(False)
+            self.genres_edit.blockSignals(False)
+        else:
+            preset = self._presets[row]
+            self.name_edit.blockSignals(True)
+            self.genres_edit.blockSignals(True)
+            self.name_edit.setText(preset.get("name", ""))
+            self.genres_edit.setPlainText(preset.get("genres", ""))
+            self.name_edit.blockSignals(False)
+            self.genres_edit.blockSignals(False)
+        self._update_form_enabled()
+
+    def _on_name_changed(self, text: str):
+        row = self.list.currentRow()
+        if row < 0 or row >= len(self._presets):
+            return
+        self._presets[row]["name"] = text.strip()
+        item = self.list.item(row)
+        if item:
+            item.setText(self._presets[row]["name"] or "Preset")
+
+    def _on_genres_changed(self):
+        row = self.list.currentRow()
+        if row < 0 or row >= len(self._presets):
+            return
+        self._presets[row]["genres"] = self.genres_edit.toPlainText().strip()
+
+    def _on_add(self):
+        self._presets.append({"name": "New Preset", "genres": ""})
+        self._reload_list()
+        self.list.setCurrentRow(self.list.count() - 1)
+
+    def _on_remove(self):
+        row = self.list.currentRow()
+        if row < 0 or row >= len(self._presets):
+            return
+        self._presets.pop(row)
+        self._reload_list()
+        if self.list.count():
+            self.list.setCurrentRow(min(row, self.list.count() - 1))
+        else:
+            self._on_selection_changed(-1)
+
+    def _update_form_enabled(self):
+        has_selection = self.list.currentRow() >= 0
+        self.name_edit.setEnabled(has_selection)
+        self.genres_edit.setEnabled(has_selection)
+        self.remove_btn.setEnabled(has_selection)
+
+    def result_presets(self) -> List[Dict[str, str]]:
+        cleaned: List[Dict[str, str]] = []
+        for preset in self._presets:
+            name = (preset.get("name") or "").strip()
+            genres_text = preset.get("genres") or ""
+            if not name:
+                continue
+            tokens = _parse_preset_genres_text(genres_text)
+            cleaned.append({
+                "name": name,
+                "genres": ", ".join(tokens),
+            })
+        return cleaned
+
 from rockbox_utils import list_rockbox_devices
 
 
@@ -23,13 +170,27 @@ class DailyMixPane(QWidget):
         super().__init__(parent)
         self.controller = controller
         self._genres: List[str] = []
+        self._genre_presets: List[Dict[str, str]] = []
+        self._loading_presets = False
         self._build_ui()
+        self._load_genre_presets()
         self._refresh_sources()
         self._on_source_changed()
 
     # ---------- UI ----------
     def _build_ui(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        scroll.setWidget(container)
+
+        root = QVBoxLayout(container)
+        root.setContentsMargins(0, 0, 0, 0)
 
         # Shared source row (used for auto and default output)
         src_row = QHBoxLayout()
@@ -87,7 +248,7 @@ class DailyMixPane(QWidget):
         self.fresh_days = QSpinBox(); self.fresh_days.setRange(0, 365); self.fresh_days.setValue(0)
         row2.addWidget(self.fresh_days)
         row2.addWidget(QLabel("Genre mode:"))
-        self.genre_mode = QComboBox(); self.genre_mode.addItems(["Random", "Pick"]) 
+        self.genre_mode = QComboBox(); self.genre_mode.addItems(["Random", "Pick", "Preset"]) 
         self.genre_mode.currentIndexChanged.connect(self._on_genre_mode_changed)
         row2.addWidget(self.genre_mode)
         self.anchor_label = QLabel("Anchors:")
@@ -95,6 +256,16 @@ class DailyMixPane(QWidget):
         self.anchor_count = QSpinBox(); self.anchor_count.setRange(1, 6); self.anchor_count.setValue(3)
         row2.addWidget(self.anchor_count)
         auto_v.addLayout(row2)
+
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Genre preset:"))
+        self.genre_preset_combo = QComboBox()
+        self.genre_preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        preset_row.addWidget(self.genre_preset_combo, 1)
+        self.manage_presets_btn = QPushButton("Manage Presets")
+        self.manage_presets_btn.clicked.connect(self._on_manage_presets)
+        preset_row.addWidget(self.manage_presets_btn)
+        auto_v.addLayout(preset_row)
 
         self.genre_controls = QWidget()
         genre_layout = QHBoxLayout(self.genre_controls)
@@ -174,9 +345,9 @@ class DailyMixPane(QWidget):
         self.manual_toggle = QToolButton()
         self.manual_toggle.setText("Manual Playlists")
         self.manual_toggle.setCheckable(True)
-        self.manual_toggle.setChecked(True)
+        self.manual_toggle.setChecked(False)
         self.manual_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.manual_toggle.setArrowType(Qt.DownArrow)
+        self.manual_toggle.setArrowType(Qt.RightArrow)
         root.addWidget(self.manual_toggle)
 
         self.manual_group = QGroupBox()
@@ -284,6 +455,146 @@ class DailyMixPane(QWidget):
         if toggle is not None:
             toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
 
+    def _load_genre_presets(self, preferred: Optional[str] = None):
+        presets = self.controller.settings.get('daily_mix_genre_presets', []) if hasattr(self.controller, 'settings') else []
+        if not isinstance(presets, list):
+            presets = []
+        self._genre_presets = [
+            {"name": str(p.get('name', '')).strip(), "genres": str(p.get('genres', '')).strip()}
+            for p in presets
+            if isinstance(p, dict)
+        ]
+
+        target = preferred if preferred is not None else str(self.controller.settings.get('daily_mix_last_preset', '') if hasattr(self.controller, 'settings') else '')
+
+        self._loading_presets = True
+        self.genre_preset_combo.blockSignals(True)
+        self.genre_preset_combo.clear()
+        self.genre_preset_combo.addItem("All genres", None)
+        for preset in self._genre_presets:
+            self.genre_preset_combo.addItem(preset.get('name') or 'Preset', dict(preset))
+        index = 0
+        if target:
+            for i in range(1, self.genre_preset_combo.count()):
+                data = self.genre_preset_combo.itemData(i)
+                if isinstance(data, dict) and (data.get('name') or '') == target:
+                    index = i
+                    break
+        self.genre_preset_combo.blockSignals(False)
+        self.genre_preset_combo.setCurrentIndex(index)
+        self._loading_presets = False
+        self._on_preset_changed()
+
+    def _current_preset_name(self) -> str:
+        data = self.genre_preset_combo.currentData()
+        if isinstance(data, dict):
+            return str(data.get('name') or '').strip()
+        return ''
+
+    def _current_allowed_genres(self) -> Optional[List[str]]:
+        data = self.genre_preset_combo.currentData()
+        if isinstance(data, dict):
+            return _parse_preset_genres_text(data.get('genres', ''))
+        return None
+
+    def _current_allowed_genres_set(self) -> Optional[Set[str]]:
+        allowed = self._current_allowed_genres()
+        if allowed is None:
+            return None
+        return {g.strip().lower() for g in allowed if g.strip()}
+
+    def _apply_preset_filter_to_lists(
+        self,
+        previous_anchors: Optional[List[str]] = None,
+        previous_blacklist: Optional[List[str]] = None,
+    ) -> None:
+        mode = (self.genre_mode.currentText() or '').strip().lower() if hasattr(self, 'genre_mode') else None
+        preset_ui_mode = (mode == 'preset')
+        allowed_list = self._current_allowed_genres()
+        preset_mode = preset_ui_mode and (allowed_list is not None)
+        allowed_set: Optional[Set[str]] = None
+        if allowed_list is not None:
+            allowed_set = {g.strip().lower() for g in allowed_list if g.strip()}
+
+        if preset_mode:
+            if allowed_set is not None and not allowed_set:
+                filtered_genres: List[str] = []
+            elif allowed_set is None:
+                filtered_genres = list(self._genres)
+            else:
+                filtered_genres = [g for g in self._genres if g.strip().lower() in allowed_set]
+        else:
+            filtered_genres = list(self._genres)
+
+        self.genre_available.blockSignals(True)
+        self.genre_available.clear()
+        for g in filtered_genres:
+            self.genre_available.addItem(g)
+        self.genre_available.sortItems()
+        self.genre_available.blockSignals(False)
+
+        if preset_mode:
+            anchors_target = allowed_list or []
+            if allowed_set is None:
+                blacklist_target = []
+            else:
+                blacklist_target = [g for g in self._genres if g.strip().lower() not in allowed_set]
+                blacklist_target = list(dict.fromkeys(sorted(blacklist_target, key=lambda s: s.lower())))
+        else:
+            anchors_src = previous_anchors if previous_anchors is not None else self._current_anchor_genres()
+            blacklist_src = previous_blacklist if previous_blacklist is not None else self._current_blacklist_genres()
+            anchors_target = [g for g in anchors_src if g in filtered_genres]
+            blacklist_target = [g for g in blacklist_src if g in filtered_genres]
+
+        self._set_list_items(self.genre_anchor, anchors_target)
+        self._set_list_items(self.genre_blacklist, blacklist_target)
+
+        enable_controls = bool(filtered_genres)
+
+        if mode == 'pick':
+            self.btn_anchor_add.setEnabled(enable_controls)
+            self.btn_anchor_remove.setEnabled(self.genre_anchor.count() > 0)
+            self.btn_anchor_clear.setEnabled(self.genre_anchor.count() > 0)
+        else:
+            self.btn_anchor_add.setEnabled(False)
+            self.btn_anchor_remove.setEnabled(False)
+            self.btn_anchor_clear.setEnabled(False)
+
+        if not preset_ui_mode:
+            self.btn_blacklist_add.setEnabled(enable_controls)
+            self.btn_blacklist_remove.setEnabled(self.genre_blacklist.count() > 0)
+            self.btn_blacklist_clear.setEnabled(self.genre_blacklist.count() > 0)
+        else:
+            self.btn_blacklist_add.setEnabled(False)
+            self.btn_blacklist_remove.setEnabled(False)
+            self.btn_blacklist_clear.setEnabled(False)
+
+    def _persist_last_preset(self, name: str):
+        current = ''
+        if hasattr(self.controller, 'settings'):
+            current = str(self.controller.settings.get('daily_mix_last_preset', '') or '')
+            self.controller.settings['daily_mix_last_preset'] = name
+        if current != name:
+            save_settings({'daily_mix_last_preset': name})
+
+    def _on_preset_changed(self):
+        if self._loading_presets:
+            return
+        self._apply_preset_filter_to_lists()
+        name = self._current_preset_name()
+        self._persist_last_preset(name)
+
+    def _on_manage_presets(self):
+        current_name = self._current_preset_name()
+        dlg = GenrePresetEditorDialog(self._genre_presets, self)
+        if dlg.exec():
+            presets = dlg.result_presets()
+            if hasattr(self.controller, 'settings'):
+                self.controller.settings['daily_mix_genre_presets'] = presets
+            save_settings({'daily_mix_genre_presets': presets})
+            self._load_genre_presets(preferred=current_name)
+
+
     @staticmethod
     def _set_list_items(widget: QListWidget, items: List[str]):
         widget.blockSignals(True)
@@ -375,6 +686,22 @@ class DailyMixPane(QWidget):
             filtered.append(r)
         return filtered
 
+    @staticmethod
+    def _filter_allowed_tracks(rows: List[Dict], allowed: Optional[Iterable[str]]) -> List[Dict]:
+        if allowed is None:
+            return list(rows)
+        allowed_set = {(g or '').strip().lower() for g in allowed if (g or '').strip()}
+        if not allowed_set:
+            return []
+        filtered: List[Dict] = []
+        for r in rows:
+            tokens = {t.strip().lower() for t in DailyMixPane._split_genre_tokens(r.get('genre', '')) if t.strip()}
+            if not tokens:
+                continue
+            if tokens & allowed_set:
+                filtered.append(r)
+        return filtered
+
     def _refresh_sources(self):
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
@@ -432,16 +759,35 @@ class DailyMixPane(QWidget):
         self._load_genres()
 
     def _on_genre_mode_changed(self):
-        pick = (self.genre_mode.currentText().lower() == 'pick')
+        mode = (self.genre_mode.currentText() or '').strip().lower()
+        pick = (mode == 'pick')
+        preset_mode = (mode == 'preset')
+
+        self.genre_controls.setVisible(not preset_mode)
+
         self.anchor_container.setVisible(pick)
         self.btn_anchor_add.setVisible(pick)
         self.btn_anchor_remove.setVisible(pick)
         self.btn_anchor_clear.setVisible(pick)
-        self.anchor_label.setVisible(not pick)
-        self.anchor_count.setVisible(not pick)
-        self.anchor_count.setEnabled(not pick)
+
+        blacklist_visible = not preset_mode
+        self.blacklist_container.setVisible(blacklist_visible)
+        self.btn_blacklist_add.setVisible(blacklist_visible)
+        self.btn_blacklist_remove.setVisible(blacklist_visible)
+        self.btn_blacklist_clear.setVisible(blacklist_visible)
+
+        show_anchor_count = (mode == 'random')
+        self.anchor_label.setVisible(show_anchor_count)
+        self.anchor_count.setVisible(show_anchor_count)
+        self.anchor_count.setEnabled(show_anchor_count)
+
         if not pick:
             self.genre_anchor.clearSelection()
+
+        if preset_mode:
+            self.genre_blacklist.clearSelection()
+
+        self._apply_preset_filter_to_lists()
 
     def _browse_out_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Select output folder", self.out_dir.text() or self._selected_base_folder() or "")
@@ -511,16 +857,7 @@ class DailyMixPane(QWidget):
         previous_blacklist = self._current_blacklist_genres()
 
         self._genres = genres
-
-        self.genre_available.blockSignals(True)
-        self.genre_available.clear()
-        for g in self._genres:
-            self.genre_available.addItem(g)
-        self.genre_available.sortItems()
-        self.genre_available.blockSignals(False)
-
-        self._set_list_items(self.genre_anchor, [g for g in previous_anchors if g in self._genres])
-        self._set_list_items(self.genre_blacklist, [g for g in previous_blacklist if g in self._genres])
+        self._apply_preset_filter_to_lists(previous_anchors, previous_blacklist)
 
     @staticmethod
     def _fmt_duration(secs):
@@ -585,6 +922,22 @@ class DailyMixPane(QWidget):
             QMessageBox.warning(self, "Daily Mix", "No tracks found in the index for the selected source.")
             return
 
+        allowed_list = self._current_allowed_genres()
+        mode = (self.genre_mode.currentText() or '').strip().lower()
+        preset_ui_mode = (mode == 'preset')
+        if preset_ui_mode and allowed_list is None:
+            QMessageBox.warning(self, "Daily Mix", "Select a genre preset before using Preset mode.")
+            return
+        preset_mode = preset_ui_mode and (allowed_list is not None)
+        if allowed_list is not None:
+            if not allowed_list:
+                QMessageBox.warning(self, "Daily Mix", "The selected genre preset does not contain any genres.")
+                return
+            tracks = self._filter_allowed_tracks(tracks, allowed_list)
+            if not tracks:
+                QMessageBox.warning(self, "Daily Mix", "No tracks match the selected genre preset.")
+                return
+
         blacklist = self._current_blacklist_genres()
         usable_tracks = self._filter_blacklisted_tracks(tracks, blacklist)
         if not usable_tracks:
@@ -593,8 +946,13 @@ class DailyMixPane(QWidget):
 
         # Determine anchors
         anchors: List[str] = []
-        pick_mode = (self.genre_mode.currentText().lower() == 'pick')
-        if pick_mode:
+        pick_mode = (mode == 'pick')
+        if preset_mode:
+            anchors = list(dict.fromkeys(allowed_list))
+            if not anchors:
+                QMessageBox.warning(self, "Daily Mix", "Preset contains no usable genres.")
+                return
+        elif pick_mode:
             anchors = self._current_anchor_genres()
             if not anchors:
                 QMessageBox.warning(self, "Daily Mix", "Please add at least one anchor genre or use Random mode.")
