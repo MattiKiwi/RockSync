@@ -205,3 +205,8 @@ settings.json
 yt_dlp.txt
 *.log.*
 logs/
+*.bin
+user_scripts/*
+!user_scripts/example_hello.py
+!user_scripts/example_hello.rocksync.json
+

@@ -169,6 +169,57 @@ Notes and Disclaimers
 - `scripts/simple_mb_genres.py`: Simpler MusicBrainz‑based genre tagging helper. Depends on `mutagen`, `musicbrainzngs`.
 - `scripts/read_rockbox_tcd_dynamic.py`: Utility to read Rockbox “tcd” dynamic playlists (developer/advanced).
 
+### Custom User Scripts
+
+RockSync can also surface your own helper scripts in the **Advanced** tab. The GUI reads them dynamically, so you do not need to modify the application code.
+
+1. **Pick a folder** – By default RockSync looks in `<repo>/user_scripts`. You can change this path in *Settings → Advanced → User scripts folder*.
+2. **Add a script** – Drop any executable script into that folder (Python, shell, etc.). The app keeps the script runnable from the command line.
+3. **(Optional) Describe it** – Provide an adjacent metadata file named `<script>.rocksync.json` (fallback: `<script>.json`). This file controls how the script appears in the UI:
+   - `id`, `label`, `display_label`, `description`
+   - `runner` (`"python"`, `"executable"`, or custom `interpreter`/`command` array)
+   - `args`: list of input specs (`type` supports `text`, `password`, `int`, `bool`, `path`, `file`, `choice`, `textarea`)
+   - Optional dependency hints via `py_deps`/`bin_deps`
+4. **Reload the Advanced tab** – The task list refreshes automatically when you save settings or reopen the tab.
+
+If no metadata file is present the script still loads with a single free-form “Argument string” field so you can paste CLI flags manually.
+
+#### Example
+
+`user_scripts/example_hello.py`:
+
+```python
+#!/usr/bin/env python3
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--name", default="RockSync")
+    parser.add_argument("--times", type=int, default=1)
+    args = parser.parse_args()
+    for idx in range(max(1, args.times)):
+        print(f"[{idx + 1}] Hello, {args.name}!")
+
+if __name__ == "__main__":
+    main()
+```
+
+`user_scripts/example_hello.rocksync.json`:
+
+```json
+{
+  "id": "user_example_hello",
+  "label": "Example: Hello",
+  "runner": "python",
+  "args": [
+    {"key": "--name", "label": "Name", "type": "text", "default": "RockSync"},
+    {"key": "--times", "label": "Repeat", "type": "int", "default": 2, "min": 1, "max": 10}
+  ]
+}
+```
+
+After saving these files, reopen the Advanced tab to see the highlighted **★ Example: Hello** task. Run it to view output inside the UI or execute the Python script directly from the terminal.
+
 ## Rockbox Device Detection
 
 - Implemented via `scripts/rockbox_detector.py`. Detects drives with a `/.rockbox` folder and surfaces label, capacity, and mountpoint. The GUI augments this to infer device names and iPod variants when possible.

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from core import CONFIG_PATH
+from core import CONFIG_PATH, USER_SCRIPTS_DIR
 
 def _default_music_root() -> str:
     """Return a sensible cross-platform default Music folder.
@@ -30,6 +30,7 @@ DEFAULT_SETTINGS = {
     "lastfm_key": "",
     "debug": False,
     "theme_file": "modern-light.css",
+    "user_scripts_dir": str(USER_SCRIPTS_DIR),
     # Optional add-ons visibility
     "enable_youtube": False,
     "enable_tidal": False,

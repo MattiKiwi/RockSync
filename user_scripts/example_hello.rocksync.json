@@ -1,0 +1,24 @@
+{
+  "id": "user_example_hello",
+  "label": "Example: Hello",
+  "display_label": "★ Example: Hello",
+  "description": "Demonstrates how RockSync discovers user scripts.",
+  "runner": "python",
+  "args": [
+    {
+      "key": "--name",
+      "label": "Name",
+      "type": "text",
+      "default": "RockSync",
+      "placeholder": "Person or thing to greet"
+    },
+    {
+      "key": "--times",
+      "label": "Repeat",
+      "type": "int",
+      "default": 2,
+      "min": 1,
+      "max": 10
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import sys
 import shlex
 import uuid
 from PySide6.QtCore import Qt, QProcess, QTimer
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCursor, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem, QStackedWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QFormLayout, QLineEdit,
@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QProgressBar
 )
 
-from core import ROOT, cmd_exists
+from core import ROOT, USER_SCRIPTS_DIR, cmd_exists
 import logging
 from settings_store import load_settings, save_settings
 from logging_utils import setup_logging, ui_log
@@ -25,6 +25,7 @@ from ui.daily_mix_pane import DailyMixPane
 from ui.tidal_pane import TidalPane
 from ui.youtube_pane import YouTubePane
 from ui.rockbox_pane import RockboxPane
+from ui.genre_pane import GenreTaggerPane
 from theme import apply_theme
 from theme_loader import list_theme_files
 
@@ -39,6 +40,7 @@ class AppWindow(QMainWindow):
         self.settings = load_settings()
         self.session_id = str(uuid.uuid4())[:8]
         self.logger = setup_logging(self.settings, self.session_id)
+        self._active_task = {}
 
         self._init_ui()
 
@@ -50,7 +52,7 @@ class AppWindow(QMainWindow):
 
         # Preload tasks for quick actions and consistency
         try:
-            self.tasks = get_tasks()
+            self.tasks = get_tasks(self.settings)
         except Exception:
             self.tasks = []
 
@@ -158,6 +160,12 @@ class AppWindow(QMainWindow):
         db_layout.addWidget(self.db)
         self.stack.addWidget(self.db_tab)
 
+        # Manual Genres
+        self.genre_tab = QWidget(); gn_layout = QVBoxLayout(self.genre_tab)
+        self.genre = GenreTaggerPane(self, self.genre_tab)
+        gn_layout.addWidget(self.genre)
+        self.stack.addWidget(self.genre_tab)
+
         # Sync
         self.sync_tab = QWidget(); sy_layout = QVBoxLayout(self.sync_tab)
         self.sync = SyncPane(self, self.sync_tab)
@@ -213,6 +221,7 @@ class AppWindow(QMainWindow):
         add_page("Sync", self.stack.indexOf(self.sync_tab))
         add_page("Playlists", self.stack.indexOf(self.daily_tab))
         add_page("Database", self.stack.indexOf(self.db_tab))
+        add_page("Genres", self.stack.indexOf(self.genre_tab))
         add_page("Settings", self.stack.indexOf(self.settings_tab))
         add_page("Rockbox", self.stack.indexOf(self.rockbox_tab))
         add_page("Advanced", self.stack.indexOf(self.run_tab))
@@ -347,6 +356,7 @@ class AppWindow(QMainWindow):
         add_page("Sync", self.stack.indexOf(self.sync_tab))
         add_page("Playlists", self.stack.indexOf(self.daily_tab))
         add_page("Database", self.stack.indexOf(self.db_tab))
+        add_page("Genres", self.stack.indexOf(self.genre_tab))
         add_page("Settings", self.stack.indexOf(self.settings_tab))
         add_page("Rockbox", self.stack.indexOf(self.rockbox_tab))
         add_page("Advanced", self.stack.indexOf(self.run_tab))
@@ -548,6 +558,15 @@ class AppWindow(QMainWindow):
         b_ff.clicked.connect(lambda: self._browse_dir_into(self.set_ffmpeg_path))
         ffh.addWidget(b_ff)
         adv_form.addRow("FFmpeg location", ffmpeg_row)
+
+        scripts_row = QWidget(); sr = QHBoxLayout(scripts_row); sr.setContentsMargins(0,0,0,0)
+        self.set_user_scripts_dir = QLineEdit(self.settings.get("user_scripts_dir", str(USER_SCRIPTS_DIR)))
+        sr.addWidget(self.set_user_scripts_dir, 1)
+        scripts_browse = QPushButton("Browse")
+        scripts_browse.setToolTip("Select the folder containing RockSync user scripts")
+        scripts_browse.clicked.connect(lambda: self._browse_dir_into(self.set_user_scripts_dir))
+        sr.addWidget(scripts_browse)
+        adv_form.addRow("User scripts folder", scripts_row)
         # Toggle button
         adv_toggle = QPushButton("Show Advanced Options")
         adv_toggle.setCheckable(True)
@@ -589,6 +608,7 @@ class AppWindow(QMainWindow):
             "dummy_device_path": self.set_dummy_device.text(),
             "dummy_device_enabled": bool(self.dummy_enable_cb.isChecked()),
             "ffmpeg_path": self.set_ffmpeg_path.text(),
+            "user_scripts_dir": self.set_user_scripts_dir.text(),
             "theme_file": self.theme_box.currentText(),
             "enable_youtube": bool(self.enable_youtube_cb.isChecked()),
             "enable_tidal": bool(self.enable_tidal_cb.isChecked()),
@@ -603,6 +623,7 @@ class AppWindow(QMainWindow):
             except Exception:
                 pass
             apply_theme(QApplication.instance(), self.settings.get('theme_file', 'system'))
+            self._reload_tasks()
             # Apply add-on visibility without restart
             if before_tidal != self.settings.get('enable_tidal', False) or before_youtube != self.settings.get('enable_youtube', False):
                 self._ensure_tidal_tab()
@@ -628,7 +649,12 @@ class AppWindow(QMainWindow):
             self.set_ffmpeg_path.setText(self.settings.get('ffmpeg_path', ''))
         except Exception:
             pass
+        try:
+            self.set_user_scripts_dir.setText(self.settings.get('user_scripts_dir', str(USER_SCRIPTS_DIR)))
+        except Exception:
+            pass
         self.theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
+        self._reload_tasks()
         try:
             self.quick_theme_box.setCurrentText(self.settings.get('theme_file', 'system'))
         except Exception:
@@ -653,7 +679,12 @@ class AppWindow(QMainWindow):
             line_edit.setText(path)
 
     def _browse_file_into(self, line_edit: QLineEdit):
-        path, _ = QFileDialog.getOpenFileName(self, "Select file", str(ROOT), "FLAC (*.flac);;All (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select file", str(ROOT), "All files (*.*)")
+        if path:
+            line_edit.setText(path)
+
+    def _browse_save_into(self, line_edit: QLineEdit):
+        path, _ = QFileDialog.getSaveFileName(self, "Select output file", str(ROOT), "All files (*.*)")
         if path:
             line_edit.setText(path)
 
@@ -675,13 +706,6 @@ class AppWindow(QMainWindow):
         layout.addLayout(left, 0)
         left.addWidget(QLabel("Tasks"))
         self.task_list = QListWidget(); left.addWidget(self.task_list, 1)
-        # Ensure tasks list exists
-        try:
-            self.tasks = self.tasks if hasattr(self, 'tasks') else get_tasks()
-        except Exception:
-            self.tasks = []
-        for t in self.tasks:
-            QListWidgetItem(t["label"], self.task_list)
         self.task_list.currentRowChanged.connect(self.on_task_select)
 
         right = QVBoxLayout()
@@ -704,9 +728,7 @@ class AppWindow(QMainWindow):
         out_v.addWidget(self.output, 1)
         right.addWidget(out_group, 1)
 
-        if self.tasks:
-            self.task_list.setCurrentRow(0)
-            self.on_task_select(0)
+        self._reload_tasks(select_first=True)
 
     def on_task_select(self, idx: int):
         if idx < 0 or idx >= len(self.tasks):
@@ -715,34 +737,93 @@ class AppWindow(QMainWindow):
         ui_log('on_task_select', idx=idx, label=task.get('label'))
         self.populate_form(task)
 
+    def _task_tooltip(self, task: dict) -> str:
+        parts = []
+        desc = task.get('description')
+        if desc:
+            parts.append(str(desc))
+        script = task.get('script')
+        if script:
+            parts.append(str(script))
+        if task.get('is_user_script') and not parts:
+            parts.append("User script")
+        return "\n".join(parts)
+
+    def _reload_tasks(self, select_first: bool = False):
+        try:
+            self.tasks = get_tasks(self.settings)
+        except Exception:
+            self.tasks = []
+        if not hasattr(self, 'task_list'):
+            return
+        current_row = self.task_list.currentRow()
+        self.task_list.blockSignals(True)
+        self.task_list.clear()
+        for task in self.tasks:
+            text = task.get('display_label') or task.get('label') or 'Task'
+            item = QListWidgetItem(text)
+            if task.get('is_user_script'):
+                item.setForeground(QColor('#0b6ee0'))
+                item.setToolTip(self._task_tooltip(task))
+            else:
+                tooltip = self._task_tooltip(task)
+                if tooltip:
+                    item.setToolTip(tooltip)
+            self.task_list.addItem(item)
+        self.task_list.blockSignals(False)
+
+        if not self.tasks:
+            while self.form.rowCount():
+                self.form.removeRow(0)
+            self.form_widgets.clear()
+            self._active_task = {}
+            return
+
+        if select_first or current_row < 0:
+            target = 0
+        else:
+            target = min(current_row, len(self.tasks) - 1)
+        self.task_list.setCurrentRow(target)
+
     def default_value_for_spec(self, spec):
+        task = getattr(self, '_active_task', {}) or {}
+        default = spec.get("default", "")
+        if task.get('is_user_script'):
+            return default
+
         key = spec.get("key", "")
         s = self.settings
         if key in ("--root", "--folder", "--music-dir", "base", "source"):
-            return s.get("music_root", spec.get("default"))
+            return s.get("music_root", default)
         if key == "--library":
-            return s.get("music_root", spec.get("default"))
+            return s.get("music_root", default)
         if key == "--size":
-            return s.get("cover_size", spec.get("default"))
+            return s.get("cover_size", default)
         if key == "--max-size":
-            return int(s.get("cover_max", spec.get("default", 100)))
+            try:
+                return int(s.get("cover_max", default if default != "" else 100))
+            except Exception:
+                return 100
         if key == "--genius-token":
-            return s.get("genius_token", spec.get("default", ""))
+            return s.get("genius_token", default)
         if key == "--lastfm-key":
-            return s.get("lastfm_key", spec.get("default", ""))
+            return s.get("lastfm_key", default)
         if key == "--jobs":
-            return int(s.get("jobs", spec.get("default", 4)))
+            try:
+                return int(s.get("jobs", default if default != "" else 4))
+            except Exception:
+                return 4
         if key == "--lyrics-subdir":
-            return s.get("lyrics_subdir", spec.get("default", "Lyrics"))
+            return s.get("lyrics_subdir", default if default != "" else "Lyrics")
         if key == "--ext":
-            default_value = spec.get("default", "")
+            default_value = default
             if str(default_value).strip().lower() == ".lrc":
                 return s.get("lyrics_ext", default_value)
             return default_value
-        return spec.get("default", "")
+        return default
 
     def populate_form(self, task):
-        # clear
+        self._active_task = task or {}
         while self.form.rowCount():
             self.form.removeRow(0)
         self.form_widgets.clear()
@@ -757,80 +838,240 @@ class AppWindow(QMainWindow):
             if not cmd_exists(bin_name):
                 missing.append(f"bin:{bin_name}")
         if missing:
-            lab = QLabel(f"Missing deps: {', '.join(missing)}"); lab.setStyleSheet("color:#b00;")
+            lab = QLabel(f"Missing deps: {', '.join(missing)}")
+            lab.setStyleSheet("color:#b00;")
             self.form.addRow(lab)
 
-        for spec in task["args"]:
-            label = spec["label"]
-            w = None
-            if spec["type"] in ("text", "password"):
-                w = QLineEdit()
-                if spec["type"] == "password":
-                    w.setEchoMode(QLineEdit.Password)
-                w.setText(str(self.default_value_for_spec(spec)))
-            elif spec["type"] == "int":
-                w = QSpinBox(); w.setRange(1, 4096)
-                w.setValue(int(self.default_value_for_spec(spec)))
-            elif spec["type"] == "bool":
-                w = QCheckBox()
-                w.setChecked(bool(self.default_value_for_spec(spec)))
-            elif spec["type"] == "path":
-                roww = QWidget(); h = QHBoxLayout(roww); h.setContentsMargins(0,0,0,0)
-                entry = QLineEdit(str(self.default_value_for_spec(spec))); h.addWidget(entry, 1)
-                b = QPushButton("Browse"); b.clicked.connect(lambda _, e=entry: self._browse_dir_into(e)); h.addWidget(b)
-                w = roww; w.entry = entry
-            elif spec["type"] == "file":
-                roww = QWidget(); h = QHBoxLayout(roww); h.setContentsMargins(0,0,0,0)
-                entry = QLineEdit(str(self.default_value_for_spec(spec))); h.addWidget(entry, 1)
-                b = QPushButton("Browse"); b.clicked.connect(lambda _, e=entry: self._browse_file_into(e)); h.addWidget(b)
-                w = roww; w.entry = entry
-            elif spec["type"] == "choice":
-                w = QComboBox();
-                for c in spec.get('choices', []):
-                    w.addItem(str(c))
-                w.setCurrentText(str(self.default_value_for_spec(spec)))
-            else:
-                w = QLineEdit(str(self.default_value_for_spec(spec)))
-            self.form.addRow(label, w)
-            self.form_widgets[spec["key"]] = w
+        description = task.get('description')
+        if description:
+            desc_label = QLabel(str(description))
+            desc_label.setWordWrap(True)
+            desc_label.setStyleSheet("color:#555;")
+            self.form.addRow('', desc_label)
 
-    def build_cmd(self, task):
-        py = shlex.quote(sys.executable)
-        script = shlex.quote(str(task["script"]))
-        # Use unbuffered Python so progress prints stream into the UI
-        parts = [py, '-u', script]
-        # Handle mutually exclusive flags for tag_genres
-        flags = {s.get('key'): s for s in task.get('args', [])}
-        overwrite_checked = False
-        if '--overwrite' in flags and isinstance(self.form_widgets.get('--overwrite'), QCheckBox):
-            overwrite_checked = bool(self.form_widgets['--overwrite'].isChecked())
+        for spec in task.get("args", []):
+            label = spec.get("label") or spec.get("key") or "Value"
+            spec_type = str(spec.get("type", "text")).lower()
+            default = self.default_value_for_spec(spec)
+            placeholder = spec.get("placeholder")
+            widget = None
+
+            if spec_type in ("text", "password"):
+                widget = QLineEdit()
+                if spec_type == "password":
+                    widget.setEchoMode(QLineEdit.Password)
+                if default not in (None, ""):
+                    widget.setText(str(default))
+                if placeholder:
+                    widget.setPlaceholderText(str(placeholder))
+            elif spec_type in ("textarea", "multiline"):
+                widget = QPlainTextEdit()
+                if default not in (None, ""):
+                    widget.setPlainText(str(default))
+                if placeholder:
+                    try:
+                        widget.setPlaceholderText(str(placeholder))
+                    except Exception:
+                        pass
+            elif spec_type == "int":
+                widget = QSpinBox()
+                try:
+                    min_val = int(spec.get("min", 0))
+                except Exception:
+                    min_val = 0
+                try:
+                    max_val = int(spec.get("max", 4096))
+                except Exception:
+                    max_val = 4096
+                if min_val > max_val:
+                    min_val, max_val = 0, 4096
+                widget.setRange(min_val, max_val)
+                try:
+                    widget.setValue(int(default))
+                except Exception:
+                    widget.setValue(min_val)
+            elif spec_type == "bool":
+                widget = QCheckBox()
+                if isinstance(default, bool):
+                    widget.setChecked(default)
+                else:
+                    widget.setChecked(str(default).strip().lower() in {"1", "true", "yes", "on"})
+            elif spec_type == "path":
+                roww = QWidget()
+                h = QHBoxLayout(roww); h.setContentsMargins(0,0,0,0)
+                entry = QLineEdit()
+                if default not in (None, ""):
+                    entry.setText(str(default))
+                if placeholder:
+                    entry.setPlaceholderText(str(placeholder))
+                h.addWidget(entry, 1)
+                b = QPushButton("Browse")
+                b.clicked.connect(lambda _, e=entry: self._browse_dir_into(e))
+                h.addWidget(b)
+                widget = roww
+                widget.entry = entry
+            elif spec_type == "file":
+                roww = QWidget()
+                h = QHBoxLayout(roww); h.setContentsMargins(0,0,0,0)
+                entry = QLineEdit()
+                if default not in (None, ""):
+                    entry.setText(str(default))
+                if placeholder:
+                    entry.setPlaceholderText(str(placeholder))
+                h.addWidget(entry, 1)
+                b = QPushButton("Browse")
+                b.clicked.connect(lambda _, e=entry: self._browse_file_into(e))
+                h.addWidget(b)
+                widget = roww
+                widget.entry = entry
+            elif spec_type in ("savefile", "save_file"):
+                roww = QWidget()
+                h = QHBoxLayout(roww); h.setContentsMargins(0,0,0,0)
+                entry = QLineEdit()
+                if default not in (None, ""):
+                    entry.setText(str(default))
+                if placeholder:
+                    entry.setPlaceholderText(str(placeholder))
+                h.addWidget(entry, 1)
+                b = QPushButton("Browse")
+                b.clicked.connect(lambda _, e=entry: self._browse_save_into(e))
+                h.addWidget(b)
+                widget = roww
+                widget.entry = entry
+            elif spec_type == "choice":
+                widget = QComboBox()
+                for choice in spec.get('choices', []):
+                    widget.addItem(str(choice))
+                if default not in (None, ""):
+                    widget.setCurrentText(str(default))
+            else:
+                widget = QLineEdit()
+                if default not in (None, ""):
+                    widget.setText(str(default))
+                if placeholder:
+                    widget.setPlaceholderText(str(placeholder))
+
+            if widget is None:
+                continue
+
+            help_text = spec.get('help')
+            if help_text:
+                widget.setToolTip(str(help_text))
+
+            self.form.addRow(label, widget)
+            key = spec.get("key")
+            if key is not None:
+                self.form_widgets[key] = widget
+
+    def _collect_current_values(self, task):
+        values = {}
+        for spec in task.get('args', []):
+            key = spec.get('key')
+            if key is None:
+                continue
+            widget = self.form_widgets.get(key)
+            if widget is None:
+                continue
+            spec_type = str(spec.get('type', 'text')).lower()
+            if spec_type == 'bool':
+                values[key] = bool(widget.isChecked())
+            elif spec_type in ('path', 'file', 'savefile', 'save_file'):
+                values[key] = widget.entry.text()
+            elif spec_type == 'int':
+                values[key] = widget.value()
+            elif spec_type == 'choice':
+                values[key] = widget.currentText()
+            elif spec_type in ('textarea', 'multiline'):
+                values[key] = widget.toPlainText()
+            else:
+                values[key] = widget.text()
+        return values
+
+    def _normalise_command_sequence(self, seq):
+        if not seq:
+            return []
+        if isinstance(seq, str):
+            try:
+                return shlex.split(seq)
+            except ValueError:
+                return [seq]
+        try:
+            return [str(part) for part in seq]
+        except TypeError:
+            return [str(seq)]
+
+    def _command_base(self, task):
+        script = task.get('script')
+        command = task.get('command')
+        if command:
+            parts = self._normalise_command_sequence(command)
+            return [shlex.quote(part) for part in parts if str(part).strip()]
+
+        interpreter = task.get('interpreter')
+        if interpreter:
+            base = self._normalise_command_sequence(interpreter)
+        else:
+            runner = task.get('runner') or 'python'
+            if runner == 'python':
+                base = [sys.executable, '-u']
+            elif runner == 'python-no-u':
+                base = [sys.executable]
+            else:
+                base = []
+        if script and (not command):
+            base.append(str(script))
+        return [shlex.quote(part) for part in base if str(part).strip()]
+
+    def _compose_command(self, task, values):
+        parts = self._command_base(task)
+        overwrite_checked = bool(values.get('--overwrite', False))
 
         for spec in task.get('args', []):
             key = spec.get('key')
-            typ = spec.get('type')
-            w = self.form_widgets.get(key)
-            val = ''
-            if typ == 'bool':
-                val = w.isChecked()
-                # Avoid passing both --only-missing and --overwrite together
+            spec_type = str(spec.get('type', 'text')).lower()
+            value = values.get(key)
+
+            if spec_type == 'bool':
                 if key == '--only-missing' and overwrite_checked:
                     continue
-                if val:
+                if value:
                     parts.append(key)
                 continue
-            if typ in ('path','file'):
-                val = w.entry.text()
-            elif typ == 'int':
-                val = str(w.value())
-            elif typ == 'choice':
-                val = w.currentText()
+
+            if key == '__argline__':
+                argline = str(value or '').strip()
+                if argline:
+                    try:
+                        tokens = shlex.split(argline)
+                    except ValueError:
+                        tokens = [argline]
+                    parts.extend(shlex.quote(tok) for tok in tokens if tok)
+                continue
+
+            if value is None or value == "":
+                continue
+
+            if isinstance(value, (list, tuple)):
+                sequence = [str(v) for v in value if str(v).strip()]
+                if not sequence:
+                    continue
+                if not key or not str(key).startswith('-'):
+                    parts.extend(shlex.quote(item) for item in sequence)
+                else:
+                    for item in sequence:
+                        parts.extend([key, shlex.quote(item)])
+                continue
+
+            text_value = str(value)
+            if not key or not str(key).startswith('-'):
+                parts.append(shlex.quote(text_value))
             else:
-                val = w.text()
-            if not str(key).startswith('-'):
-                parts.append(shlex.quote(str(val)))
-            else:
-                parts.extend([key, shlex.quote(str(val))])
+                parts.extend([key, shlex.quote(text_value)])
         return " ".join(parts)
+
+    def build_cmd(self, task):
+        values = self._collect_current_values(task)
+        return self._compose_command(task, values)
 
     def append_output(self, text):
         # Append to UI
@@ -983,7 +1224,7 @@ class AppWindow(QMainWindow):
                 w = quick_widgets.get(key)
                 if w is None:
                     continue
-                typ = spec.get('type')
+                typ = str(spec.get('type', 'text')).lower()
                 if typ == 'bool':
                     values[key] = bool(w.isChecked())
                 elif typ in ('path','file'):
@@ -992,9 +1233,11 @@ class AppWindow(QMainWindow):
                     values[key] = w.value()
                 elif typ == 'choice':
                     values[key] = w.currentText()
+                elif typ in ('textarea', 'multiline'):
+                    values[key] = w.toPlainText()
                 else:
                     values[key] = w.text()
-            cmd = self._build_cmd_with_values(task, values)
+            cmd = self._compose_command(task, values)
             self.append_output(f"\n$ {cmd}\n")
             ui_log('quick_task_run', task=task.get('label'), folder_path=folder_path, cmd=cmd)
             try:
@@ -1008,31 +1251,6 @@ class AppWindow(QMainWindow):
         runb.clicked.connect(do_run)
         cancelb.clicked.connect(dlg.reject)
         dlg.exec()
-
-    def _build_cmd_with_values(self, task, values):
-        py = shlex.quote(sys.executable)
-        script = shlex.quote(str(task["script"]))
-        # Use unbuffered Python so progress prints stream into the UI
-        parts = [py, '-u', script]
-        # Handle mutually exclusive flags for tag_genres
-        overwrite_checked = bool(values.get('--overwrite', False))
-
-        for spec in task.get('args', []):
-            key = spec.get('key')
-            typ = spec.get('type')
-            val = values.get(key, '')
-            if typ == 'bool':
-                # Avoid passing both --only-missing and --overwrite together
-                if key == '--only-missing' and overwrite_checked:
-                    continue
-                if val:
-                    parts.append(key)
-                continue
-            if not str(key).startswith('-'):
-                parts.append(shlex.quote(str(val)))
-            else:
-                parts.extend([key, shlex.quote(str(val))])
-        return " ".join(parts)
 
     def _start_process(self, cmd, label: str | None = None):
         self.run_btn.setEnabled(False)

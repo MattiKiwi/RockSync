@@ -1,8 +1,42 @@
+"""Registry for built-in and user-provided automation scripts.
+
+This module exposes the list of tasks displayed in the Advanced tab.  Built-in
+tasks are defined statically so they retain tight coupling with the repository.
+User-provided scripts are discovered dynamically from a directory configured in
+settings (default: `<app root>/user_scripts`).
+
+Each task is a dictionary containing at least:
+
+* `id`: stable identifier (string)
+* `label`: human-readable label
+* `script`: Path to the script (if applicable)
+* `args`: list describing UI controls, following the existing schema
+* `py_deps`/`bin_deps`: optional dependency hints
+
+User scripts can ship an optional metadata file `<name>.rocksync.json` (or
+`<name>.json` as fallback) that mirrors the built-in schema.  If no metadata is
+present, RockSync falls back to a minimal specification with a single free-form
+arguments field so scripts remain runnable via the UI.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
 import os
-from core import ROOT, SCRIPTS_DIR
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Sequence
+
+from core import ROOT, SCRIPTS_DIR, USER_SCRIPTS_DIR
+from settings_store import load_settings
 
 
-def get_tasks():
+LOGGER = logging.getLogger(__name__)
+
+
+def _builtin_tasks() -> List[Dict[str, Any]]:
+    """Return the built-in task specifications."""
+
     return [
         {
             "id": "covers",
@@ -170,3 +204,144 @@ def get_tasks():
             "bin_deps": ["ffmpeg"],
         },
     ]
+
+
+def _resolve_user_scripts_dir(settings: Dict[str, Any] | None) -> Path:
+    """Return the directory that should be scanned for user scripts."""
+
+    base = (settings or {}).get("user_scripts_dir") or str(USER_SCRIPTS_DIR)
+    try:
+        path = Path(base).expanduser()
+    except Exception:
+        path = USER_SCRIPTS_DIR
+
+    if not path.is_absolute():
+        # Treat relative paths as relative to the application root
+        path = (ROOT / path).resolve()
+    return path
+
+
+def _metadata_candidates(script_path: Path) -> Iterable[Path]:
+    stem = script_path.stem
+    parent = script_path.parent
+    yield parent / f"{stem}.rocksync.json"
+    yield parent / f"{stem}.json"
+
+
+def _load_metadata(script_path: Path) -> Dict[str, Any]:
+    for candidate in _metadata_candidates(script_path):
+        if not candidate.exists():
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+            LOGGER.warning("Metadata for %s is not a JSON object", script_path)
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.warning("Could not load metadata for %s: %s", script_path, exc)
+    return {}
+
+
+def _normalise_sequence(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return value.split()
+    if isinstance(value, Sequence):
+        return [str(v) for v in value]
+    return [str(value)]
+
+
+def _infer_runner(script_path: Path, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Determine how the script should be executed."""
+
+    task_flags: Dict[str, Any] = {}
+    command = metadata.get("command")
+    if command:
+        task_flags["command"] = _normalise_sequence(command)
+        return task_flags
+
+    interpreter = metadata.get("interpreter")
+    if interpreter:
+        task_flags["interpreter"] = _normalise_sequence(interpreter)
+        return task_flags
+
+    runner = metadata.get("runner")
+    if runner:
+        task_flags["runner"] = str(runner)
+        return task_flags
+
+    # Default behaviour: Python scripts via interpreter, others as executables
+    if script_path.suffix.lower() == ".py":
+        task_flags["runner"] = "python"
+    else:
+        task_flags["runner"] = "executable"
+    return task_flags
+
+
+def _ensure_default_args(metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    args = metadata.get("args")
+    if isinstance(args, list):
+        filtered = [a for a in args if isinstance(a, dict)]
+        if filtered:
+            return filtered
+    # Fallback to a single free-form text field for CLI arguments
+    return [
+        {
+            "key": "__argline__",
+            "label": "Argument string",
+            "type": "text",
+            "default": "",
+            "placeholder": "Example: --flag value --path /tmp",
+        }
+    ]
+
+
+def _build_user_task(script_path: Path, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    label = metadata.get("label") or script_path.stem.replace("_", " ")
+    task = {
+        "id": metadata.get("id") or f"user:{script_path.stem}",
+        "label": str(label),
+        "display_label": metadata.get("display_label") or f"★ {label}",
+        "description": metadata.get("description", ""),
+        "script": script_path,
+        "args": _ensure_default_args(metadata),
+        "py_deps": metadata.get("py_deps", []),
+        "bin_deps": metadata.get("bin_deps", []),
+        "is_user_script": True,
+    }
+    task.update(_infer_runner(script_path, metadata))
+    return task
+
+
+def _collect_user_tasks(settings: Dict[str, Any] | None) -> List[Dict[str, Any]]:
+    directory = _resolve_user_scripts_dir(settings)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass  # directory creation is best-effort
+
+    if not directory.exists() or not directory.is_dir():
+        return []
+
+    tasks: List[Dict[str, Any]] = []
+    for script_path in sorted(directory.iterdir()):
+        if not script_path.is_file():
+            continue
+        if script_path.suffix.lower() in {".json", ".yaml", ".yml"}:
+            continue
+        metadata = _load_metadata(script_path)
+        task = _build_user_task(script_path, metadata)
+        tasks.append(task)
+    return tasks
+
+
+def get_tasks(settings: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+    """Return the combined list of built-in and user-defined tasks."""
+
+    settings = settings or load_settings()
+    tasks = _builtin_tasks()
+    tasks.extend(_collect_user_tasks(settings))
+    return tasks
+
