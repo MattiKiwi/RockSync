@@ -163,6 +163,7 @@ class AppWindow(QMainWindow):
         # Manual Genres
         self.genre_tab = QWidget(); gn_layout = QVBoxLayout(self.genre_tab)
         self.genre = GenreTaggerPane(self, self.genre_tab)
+        self.genre_tagger = self.genre
         gn_layout.addWidget(self.genre)
         self.stack.addWidget(self.genre_tab)
 
@@ -265,6 +266,10 @@ class AppWindow(QMainWindow):
                     # Initialize Tidal pane on demand to avoid startup failures
                     if hasattr(self, 'tidal'):
                         self.tidal.activate()
+                if hasattr(self, 'genre_tagger'):
+                    genre_idx = self.stack.indexOf(self.genre_tab)
+                    if idx != genre_idx:
+                        self.genre_tagger.disable_autoplay()
             except Exception:
                 pass
 
@@ -694,6 +699,11 @@ class AppWindow(QMainWindow):
         try:
             if hasattr(self, 'tidal') and hasattr(self.tidal, 'shutdown'):
                 self.tidal.shutdown()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'genre_tagger') and hasattr(self.genre_tagger, 'stop_all_playback'):
+                self.genre_tagger.stop_all_playback()
         except Exception:
             pass
         super().closeEvent(event)

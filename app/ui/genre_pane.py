@@ -6,13 +6,14 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 
 from PySide6.QtCore import Qt, QUrl, QRunnable, QThreadPool, Signal, QObject
-from PySide6.QtGui import QPixmap, QColor, QPalette
+from PySide6.QtGui import QPixmap, QColor, QPalette, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QSizePolicy, QGroupBox, QTableWidget, QTableWidgetItem, QComboBox, QAbstractItemView
+    QSizePolicy, QGroupBox, QTableWidget, QTableWidgetItem, QComboBox, QAbstractItemView,
+    QCheckBox
 )
 from PySide6.QtWidgets import QHeaderView
 
@@ -71,7 +72,11 @@ class GenreSuggestionWorker(QRunnable):
             error = "Genre suggestion lookup timed out."
         except Exception as exc:  # pragma: no cover - safeguard against unexpected runtime issues
             error = f"Suggestion lookup error: {exc}"
-        self.signals.finished.emit(self.task_id, genres, error)
+        try:
+            self.signals.finished.emit(self.task_id, genres, error)
+        except RuntimeError:
+            # Widget is shutting down; skip emitting to deleted signal
+            pass
 
 
 class GenreTaggerPane(QWidget):
@@ -92,6 +97,8 @@ class GenreTaggerPane(QWidget):
         self._thread_pool = QThreadPool(self)
         self._suggestion_task_id = 0
         self._last_suggestion_source: Optional[str] = None
+        self._checked_paths: Set[str] = set()
+        self._load_checked_paths()
         self._build_ui()
         self._init_audio()
         self._suppress_source_apply = False
@@ -112,6 +119,19 @@ class GenreTaggerPane(QWidget):
         source_row.addWidget(self.source_refresh_btn)
         source_row.addStretch(1)
         root.addLayout(source_row)
+
+        options_row = QHBoxLayout()
+        self.include_existing_cb = QCheckBox("Include tracks with existing genre")
+        self.include_existing_cb.setToolTip("When enabled, the queue contains all tracks so you can overwrite existing genres.")
+        self.include_existing_cb.toggled.connect(self._on_include_existing_toggled)
+        options_row.addWidget(self.include_existing_cb)
+
+        self.autoplay_cb = QCheckBox("Auto-play current track")
+        self.autoplay_cb.setToolTip("Automatically start playback when a track loads.")
+        self.autoplay_cb.toggled.connect(self._on_autoplay_toggled)
+        options_row.addWidget(self.autoplay_cb)
+        options_row.addStretch(1)
+        root.addLayout(options_row)
 
         self.progress_label = QLabel("Loading tracks…")
         self.progress_label.setObjectName("GenreProgressLabel")
@@ -181,6 +201,9 @@ class GenreTaggerPane(QWidget):
         self.path_label.setStyleSheet("color: #666;")
         root.addWidget(self.path_label)
 
+        self.current_genre_label = QLabel("")
+        root.addWidget(self.current_genre_label)
+
         self.genre_edit = QLineEdit()
         self.genre_edit.setPlaceholderText("Enter genre and press Enter…")
         self.genre_edit.setClearButtonEnabled(True)
@@ -206,6 +229,10 @@ class GenreTaggerPane(QWidget):
         self.skip_btn = QPushButton("Skip")
         self.skip_btn.clicked.connect(self._skip_current)
         buttons.addWidget(self.skip_btn)
+
+        self.skip_shortcut = QShortcut(QKeySequence(Qt.Key_Tab), self)
+        self.skip_shortcut.setContext(Qt.WindowShortcut)
+        self.skip_shortcut.activated.connect(self._on_skip_shortcut)
 
         self.reload_btn = QPushButton("Reload")
         self.reload_btn.clicked.connect(self.reload_queue)
@@ -284,6 +311,9 @@ class GenreTaggerPane(QWidget):
             self.preview_play_btn.setToolTip("Audio preview requires QtMultimedia support.")
             self.preview_play_btn.setEnabled(False)
             self.preview_stop_btn.setEnabled(False)
+            if hasattr(self, 'autoplay_cb'):
+                self.autoplay_cb.setEnabled(False)
+                self.autoplay_cb.setToolTip("Audio preview requires QtMultimedia support.")
             return
         try:
             self._audio_output = QAudioOutput(self)
@@ -297,8 +327,13 @@ class GenreTaggerPane(QWidget):
             self.preview_play_btn.setEnabled(False)
             self.preview_stop_btn.setEnabled(False)
             self.preview_play_btn.setToolTip("Audio preview failed to initialize.")
+            if hasattr(self, 'autoplay_cb'):
+                self.autoplay_cb.setEnabled(False)
+                self.autoplay_cb.setToolTip("Audio preview failed to initialize.")
         else:
             self.preview_play_btn.setToolTip("")
+            if hasattr(self, 'autoplay_cb'):
+                self.autoplay_cb.setEnabled(True)
 
     # ---------- Data loading ----------
     def _db_path(self) -> Path:
@@ -343,6 +378,23 @@ class GenreTaggerPane(QWidget):
     def _on_source_changed(self):
         self._apply_source_change()
 
+    def _on_include_existing_toggled(self, checked: bool):
+        try:
+            ui_log('genre_include_existing_toggle', enabled=bool(checked))
+        except Exception:
+            pass
+        self.reload_queue()
+
+    def _on_autoplay_toggled(self, checked: bool):
+        if checked:
+            self._auto_play_current()
+        else:
+            self._stop_preview()
+        try:
+            ui_log('genre_autoplay_toggle', enabled=bool(checked))
+        except Exception:
+            pass
+
     def _apply_source_change(self):
         if getattr(self, '_suppress_source_apply', False):
             return
@@ -364,19 +416,22 @@ class GenreTaggerPane(QWidget):
             self._set_status(f"{source_name}: Library index not found. Open Database tab and scan this source.")
             self._update_display()
             return
+        include_existing = self.include_existing_cb.isChecked()
         try:
             with sqlite3.connect(str(db_path)) as conn:
-                cursor = conn.execute(
-                    """
-                    SELECT path, IFNULL(artist,''), IFNULL(album,''), IFNULL(title,''), IFNULL(track,''), IFNULL(format,'')
-                    FROM tracks
-                    WHERE TRIM(IFNULL(genre,'')) = ''
-                    ORDER BY artist, album, track, title
-                    """
+                where = "" if include_existing else "WHERE TRIM(IFNULL(genre,'')) = ''"
+                sql = (
+                    "SELECT path, IFNULL(artist,''), IFNULL(album,''), IFNULL(title,''), "
+                    "IFNULL(track,''), IFNULL(format,''), IFNULL(genre,'') "
+                    "FROM tracks "
+                    f"{where} ORDER BY artist, album, track, title"
                 )
+                cursor = conn.execute(sql)
                 for row in cursor.fetchall():
                     path = row[0]
                     if not path:
+                        continue
+                    if include_existing and self._is_checked(path):
                         continue
                     self._queue.append({
                         'path': path,
@@ -385,6 +440,7 @@ class GenreTaggerPane(QWidget):
                         'title': row[3] or '',
                         'track': row[4] or '',
                         'format': row[5] or '',
+                        'genre': row[6] or '',
                     })
         except Exception as exc:
             self._set_status(f"{source_name}: DB error: {exc}")
@@ -392,9 +448,15 @@ class GenreTaggerPane(QWidget):
             return
 
         if self._queue:
-            self._set_status(f"{source_name}: Loaded {len(self._queue)} track(s) without genre.")
+            if include_existing:
+                self._set_status(f"{source_name}: Loaded {len(self._queue)} track(s) (including existing genres).")
+            else:
+                self._set_status(f"{source_name}: Loaded {len(self._queue)} track(s) without genre.")
         else:
-            self._set_status(f"{source_name}: All indexed tracks already have a genre.")
+            if include_existing:
+                self._set_status(f"{source_name}: No tracks found in index.")
+            else:
+                self._set_status(f"{source_name}: All indexed tracks already have a genre.")
         self._update_display()
 
     # ---------- Actions ----------
@@ -428,6 +490,7 @@ class GenreTaggerPane(QWidget):
         self.genre_edit.clear()
         self._update_search_entry(path, genre)
         self._clear_error()
+        self._mark_checked(path)
         if not self._queue:
             self.reload_queue()
         else:
@@ -452,6 +515,7 @@ class GenreTaggerPane(QWidget):
         title = skipped['title'] or Path(skipped['path']).name
         self.genre_edit.clear()
         self._set_status(f"Skipped {title}.")
+        self._mark_checked(skipped['path'])
         self._update_display()
 
     # ---------- Helpers ----------
@@ -463,6 +527,7 @@ class GenreTaggerPane(QWidget):
             self.track_label.setToolTip("")
             self.path_label.setToolTip("")
             self._set_cover_placeholder()
+            self.current_genre_label.setText("")
             self.genre_edit.setEnabled(False)
             self.apply_btn.setEnabled(False)
             self.skip_btn.setEnabled(False)
@@ -499,6 +564,11 @@ class GenreTaggerPane(QWidget):
         display_path = entry['path']
         self.path_label.setText(self._render_wrapped_path(display_path))
         self.path_label.setToolTip(display_path)
+        existing = (entry.get('genre') or '').strip()
+        if existing:
+            self.current_genre_label.setText(f"Current genre: {existing}")
+        else:
+            self.current_genre_label.setText("Current genre: (none)")
         self._update_cover(display_path)
         self.genre_edit.setEnabled(True)
         self.apply_btn.setEnabled(True)
@@ -507,6 +577,7 @@ class GenreTaggerPane(QWidget):
         self.preview_stop_btn.setEnabled(False)
         self.suggest_refresh_btn.setEnabled(True)
         self._schedule_suggestions(entry)
+        self._auto_play_current()
         self.genre_edit.setFocus(Qt.OtherFocusReason)
 
     def _play_preview(self):
@@ -549,6 +620,47 @@ class GenreTaggerPane(QWidget):
         btn = getattr(self, 'preview_stop_btn', None)
         if btn is not None:
             btn.setEnabled(False)
+
+    def stop_all_playback(self):
+        self._stop_preview()
+        self._preview_path = None
+        if getattr(self, 'autoplay_cb', None):
+            self.autoplay_cb.blockSignals(True)
+            self.autoplay_cb.setChecked(False)
+            self.autoplay_cb.blockSignals(False)
+
+    def disable_autoplay(self):
+        if getattr(self, 'autoplay_cb', None):
+            changed = self.autoplay_cb.isChecked()
+            self.autoplay_cb.blockSignals(True)
+            self.autoplay_cb.setChecked(False)
+            self.autoplay_cb.blockSignals(False)
+            if changed:
+                try:
+                    ui_log('genre_autoplay_toggle', enabled=False)
+                except Exception:
+                    pass
+        self._stop_preview()
+
+    def _auto_play_current(self):
+        if not getattr(self, 'autoplay_cb', None):
+            return
+        if not self.autoplay_cb.isChecked():
+            return
+        if self._audio_player is None:
+            return
+        entry = self._current_entry()
+        if not entry:
+            return
+        path = entry.get('path') or ''
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            if self._preview_path == path and self._audio_player.playbackState() == QMediaPlayer.PlayingState:
+                return
+        except Exception:
+            pass
+        self._play_preview()
 
     def _on_playback_state_changed(self, state):
         if QMediaPlayer is None:
@@ -680,6 +792,37 @@ class GenreTaggerPane(QWidget):
         self.cover_label.setPixmap(scaled)
         self.cover_label.setText("")
         self.cover_label.setToolTip(source)
+
+    # ---------- Progress tracking ----------
+    def _progress_file(self) -> Path:
+        return CONFIG_PATH.with_name('genre_checked.json')
+
+    def _load_checked_paths(self):
+        pf = self._progress_file()
+        if not pf.exists():
+            return
+        try:
+            data = json.loads(pf.read_text(encoding='utf-8'))
+            if isinstance(data, list):
+                self._checked_paths = {str(p) for p in data}
+        except Exception:
+            self._checked_paths = set()
+
+    def _save_checked_paths(self):
+        pf = self._progress_file()
+        try:
+            pf.write_text(json.dumps(sorted(self._checked_paths), indent=4), encoding='utf-8')
+        except Exception:
+            pass
+
+    def _is_checked(self, path: str) -> bool:
+        return bool(path) and path in self._checked_paths
+
+    def _mark_checked(self, path: str):
+        if not path or self._is_checked(path):
+            return
+        self._checked_paths.add(path)
+        self._save_checked_paths()
 
     def _clear_suggestions(self, status: str = ""):
         self._set_suggestion_status(status or "")
@@ -964,9 +1107,13 @@ class GenreTaggerPane(QWidget):
             if info.get('path') == path:
                 self._queue.pop(idx)
                 removed = True
+                self._mark_checked(path)
                 break
         if removed:
             self._update_display()
+
+    def _on_skip_shortcut(self):
+        self._skip_current()
 
     def _update_search_entry(self, path: str, genre: str):
         if not path:
