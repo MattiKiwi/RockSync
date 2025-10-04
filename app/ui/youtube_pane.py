@@ -25,6 +25,10 @@ import json
 import re
 import subprocess
 
+from yt_dlp import YoutubeDL
+
+from ui.manual_chapters_dialog import ManualChaptersDialog
+
 
 class YouTubePane(QWidget):
     """Browse YouTube (search, playlists, feeds) and download via yt-dlp.
@@ -52,6 +56,7 @@ class YouTubePane(QWidget):
         self._selected_urls: set[str] = set()
         self._url_to_card_button: Dict[str, QPushButton] = {}
         self._post_download: Optional[Dict[str, Any]] = None
+        self._manual_chapter_file: Optional[str] = None
         self._build_ui()
         self._load_profiles()
 
@@ -905,6 +910,14 @@ class YouTubePane(QWidget):
             self.settings.update(patch)
             save_settings(patch)
 
+        manual_file = None
+        cancelled = False
+        if urls and self._args_request_split(args_str):
+            manual_file, cancelled = self._prepare_manual_chapters(urls, args_str)
+            if cancelled:
+                self._set_status('Download cancelled.')
+                return
+
         # Build command for downloader script
         py = shlex.quote(sys.executable)
         script = shlex.quote(str(SCRIPTS_DIR / 'yt_download.py'))
@@ -924,6 +937,8 @@ class YouTubePane(QWidget):
             parts.extend(['--cookies-file', shlex.quote(str(cargs['cookies_file']))])
         elif cargs.get('cookies_from_browser'):
             parts.extend(['--cookies-from-browser', shlex.quote(str(cargs['cookies_from_browser']))])
+        if manual_file:
+            parts.extend(['--manual-chapters', shlex.quote(manual_file)])
         # URLs last
         for u in urls:
             parts.append(shlex.quote(u))
@@ -963,6 +978,18 @@ class YouTubePane(QWidget):
             self.settings.update(patch)
             save_settings(patch)
 
+        manual_file = None
+        cancelled = False
+        if urls and self._args_request_split(args_str):
+            manual_file, cancelled = self._prepare_manual_chapters(urls, args_str)
+            if cancelled:
+                self._set_status('Download cancelled.')
+                try:
+                    shutil.rmtree(tmpdir)
+                except Exception:
+                    pass
+                return
+
         py = shlex.quote(sys.executable)
         script = shlex.quote(str(SCRIPTS_DIR / 'yt_download.py'))
         parts = [py, '-u', script, '--dest', shlex.quote(tmpdir)]
@@ -979,6 +1006,8 @@ class YouTubePane(QWidget):
             parts.extend(['--cookies-file', shlex.quote(str(cargs['cookies_file']))])
         elif cargs.get('cookies_from_browser'):
             parts.extend(['--cookies-from-browser', shlex.quote(str(cargs['cookies_from_browser']))])
+        if manual_file:
+            parts.extend(['--manual-chapters', shlex.quote(manual_file)])
         for u in urls:
             parts.append(shlex.quote(u))
         cmd = " ".join(parts)
@@ -1011,6 +1040,120 @@ class YouTubePane(QWidget):
         }
         self._queue_add(data)
         self.manual_url.clear()
+
+    # ---------- Manual chapters helpers ----------
+    def _args_request_split(self, args_str: str) -> bool:
+        text = (args_str or '').lower()
+        if '--split-chapters' in text:
+            return True
+        return 'chapter:' in text
+
+    def _gather_video_infos(self, urls: List[str]) -> Dict[str, Dict[str, Any]]:
+        if not urls:
+            return {}
+        opts: Dict[str, Any] = {
+            'quiet': True,
+            'skip_download': True,
+            'extract_flat': False,
+            'noplaylist': False,
+            'cachedir': True,
+            'no_warnings': True,
+        }
+        cargs = self._cookie_args()
+        if cargs.get('cookies_file'):
+            opts['cookiefile'] = str(cargs['cookies_file'])
+        elif cargs.get('cookies_from_browser'):
+            opts['cookiesfrombrowser'] = (str(cargs['cookies_from_browser']),)
+        videos: Dict[str, Dict[str, Any]] = {}
+
+        def _maybe_record(info: Dict[str, Any]):
+            vid = str(info.get('id') or '').strip()
+            if not vid:
+                return
+            videos[vid] = info
+
+        try:
+            with YoutubeDL(opts) as ydl:
+                for url in urls:
+                    try:
+                        info = ydl.extract_info(url, download=False)
+                    except Exception as exc:
+                        QMessageBox.warning(self, 'YouTube', f'Could not inspect {url}: {exc}')
+                        continue
+                    if not isinstance(info, dict):
+                        continue
+                    stack = [info]
+                    while stack:
+                        cur = stack.pop()
+                        if not isinstance(cur, dict):
+                            continue
+                        if cur.get('_type') in ('playlist', 'multi_video'):
+                            for entry in cur.get('entries') or []:
+                                if isinstance(entry, dict):
+                                    if entry.get('_type') in ('url', 'url_transparent') and entry.get('url'):
+                                        try:
+                                            sub = ydl.extract_info(entry.get('url'), download=False)
+                                            if isinstance(sub, dict):
+                                                stack.append(sub)
+                                        except Exception:
+                                            continue
+                                    else:
+                                        stack.append(entry)
+                            continue
+                        _maybe_record(cur)
+        except Exception as exc:
+            QMessageBox.warning(self, 'YouTube', f'Chapter inspection failed: {exc}')
+        return videos
+
+    def _prepare_manual_chapters(self, urls: List[str], args_str: str) -> tuple[Optional[str], bool]:
+        if not self._args_request_split(args_str):
+            return (None, False)
+        self._cleanup_manual_chapter_file()
+        videos = self._gather_video_infos(urls)
+        targets = [info for info in videos.values() if not info.get('chapters')]
+        if not targets:
+            return (None, False)
+        manual_infos: List[Dict[str, Any]] = []
+        for info in targets:
+            title = str(info.get('title') or info.get('id') or 'Video')
+            url = str(info.get('webpage_url') or info.get('original_url') or info.get('url') or '')
+            dlg = ManualChaptersDialog(self, title, url)
+            res = dlg.exec()
+            code = dlg.result_code()
+            if code == ManualChaptersDialog.RESULT_CANCEL:
+                return (None, True)
+            if code == ManualChaptersDialog.RESULT_SKIP:
+                continue
+            chapters = dlg.chapters()
+            if not chapters:
+                continue
+            sanitized = dict(info)
+            sanitized['chapters'] = chapters
+            manual_infos.append({
+                'id': info.get('id'),
+                'url': url,
+                'info': sanitized,
+            })
+        if not manual_infos:
+            return (None, False)
+        tmp = tempfile.NamedTemporaryFile('w', delete=False, suffix='.manualchapters.json')
+        data = {'videos': manual_infos}
+        json.dump(data, tmp, ensure_ascii=False, default=str)
+        tmp_path = tmp.name
+        tmp.close()
+        self._manual_chapter_file = tmp_path
+        return (tmp_path, False)
+
+    def _cleanup_manual_chapter_file(self):
+        path = self._manual_chapter_file
+        if not path:
+            return
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        self._manual_chapter_file = None
 
     # ---------- Process handling ----------
     def _start_process(self, cmd: str):
@@ -1071,6 +1214,8 @@ class YouTubePane(QWidget):
                         pass
         except Exception:
             pass
+        finally:
+            self._cleanup_manual_chapter_file()
 
     # ---------- Import integration ----------
     def _do_import_from_temp(self, tmpdir: str, post: Optional[Dict[str, Any]] = None):

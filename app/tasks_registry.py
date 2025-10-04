@@ -37,6 +37,20 @@ LOGGER = logging.getLogger(__name__)
 def _builtin_tasks() -> List[Dict[str, Any]]:
     """Return the built-in task specifications."""
 
+    settings = load_settings()
+
+    def _music_root_default() -> str:
+        try:
+            candidate = (settings or {}).get("music_root")
+            if isinstance(candidate, str) and candidate.strip():
+                return str(Path(candidate).expanduser())
+        except Exception:
+            pass
+        return str(ROOT)
+
+    music_root_default = _music_root_default()
+    auto_title_pattern_default = r"^\d+\.\s*(?P<title>.*?)\s+by\s+(?P<artist>.*?)\.(?P<ext>m4a|mp3|flac|wav|aac|ogg|wma|alac)$"
+
     return [
         {
             "id": "covers",
@@ -120,6 +134,23 @@ def _builtin_tasks() -> List[Dict[str, Any]]:
                 {"key": "--dry-run", "label": "Dry Run", "type": "bool", "default": True},
                 {"key": "--skip-missing-source", "label": "Keep device genre if source missing", "type": "bool", "default": False},
                 {"key": "--verbose", "label": "Verbose output", "type": "bool", "default": False},
+            ],
+            "py_deps": ["mutagen"],
+            "bin_deps": [],
+        },
+        {
+            "id": "auto_title_artist",
+            "label": "Auto Title/Artist from Filename",
+            "script": SCRIPTS_DIR / "auto_title_artist.py",
+            "args": [
+                {"key": "--folder", "label": "Folder", "type": "path", "default": music_root_default},
+                {"key": "--regex", "label": "Regex pattern", "type": "text", "default": auto_title_pattern_default, "help": "Use named groups 'title' and 'artist' or positional groups."},
+                {"key": "--ignore-case", "label": "Regex ignore case", "type": "bool", "default": False},
+                {"key": "--recursive", "label": "Recurse subfolders", "type": "bool", "default": False},
+                {"key": "--ext", "label": "Extensions (space/comma separated)", "type": "text", "default": ".flac .mp3 .m4a .aac .ogg .opus .wav .wv .aiff .ape .mpc"},
+                {"key": "--dry-run", "label": "Dry run", "type": "bool", "default": False},
+                {"key": "--verbose", "label": "Verbose output", "type": "bool", "default": False},
+                {"key": "--debug-regex", "label": "List unmatched files", "type": "bool", "default": False},
             ],
             "py_deps": ["mutagen"],
             "bin_deps": [],
