@@ -78,6 +78,53 @@ def _builtin_tasks() -> List[Dict[str, Any]]:
             "bin_deps": [],
         },
         {
+            "id": "replace_genre",
+            "label": "Replace Genre",
+            "script": SCRIPTS_DIR / "replace_genre.py",
+            "args": [
+                {"key": "--from-genre", "label": "Current genre", "type": "text", "default": ""},
+                {"key": "--to-genre", "label": "New genre", "type": "text", "default": ""},
+                {"key": "--db", "label": "Database", "type": "path", "default": str(ROOT / "app" / "music_index.sqlite3")},
+                {"key": "--dry-run", "label": "Dry Run", "type": "bool", "default": True},
+                {"key": "--update-tags", "label": "Update audio tags", "type": "bool", "default": False},
+                {"key": "--case-sensitive", "label": "Case sensitive match", "type": "bool", "default": False},
+                {"key": "--verbose", "label": "Verbose output", "type": "bool", "default": False},
+            ],
+            "py_deps": ["mutagen"],
+            "bin_deps": [],
+        },
+        {
+            "id": "delete_by_genre",
+            "label": "Delete Tracks by Genre",
+            "script": SCRIPTS_DIR / "delete_by_genre.py",
+            "args": [
+                {"key": "--genre", "label": "Genre to delete", "type": "text", "default": ""},
+                {"key": "--db", "label": "Database", "type": "path", "default": str(ROOT / "app" / "music_index.sqlite3")},
+                {"key": "--dry-run", "label": "Dry Run", "type": "bool", "default": True},
+                {"key": "--delete-files", "label": "Delete audio files", "type": "bool", "default": False},
+                {"key": "--case-sensitive", "label": "Case sensitive match", "type": "bool", "default": False},
+                {"key": "--verbose", "label": "Verbose output", "type": "bool", "default": False},
+            ],
+            "py_deps": [],
+            "bin_deps": [],
+        },
+        {
+            "id": "sync_device_genres",
+            "label": "Sync Device Genres",
+            "script": SCRIPTS_DIR / "sync_device_genres.py",
+            "args": [
+                {"key": "--device", "label": "Device", "type": "device", "default": ""},
+                {"key": "--source-root", "label": "Library root override", "type": "path", "default": "", "help": "Optional. Uses music_root from settings when left blank."},
+                {"key": "--device-subdir", "label": "Device music subfolder", "type": "text", "default": "Music"},
+                {"key": "--ext", "label": "Extensions (space-separated)", "type": "text", "default": ".mp3 .flac .m4a .aac .ogg .opus .wav .wv .aiff .ape .mpc"},
+                {"key": "--dry-run", "label": "Dry Run", "type": "bool", "default": True},
+                {"key": "--skip-missing-source", "label": "Keep device genre if source missing", "type": "bool", "default": False},
+                {"key": "--verbose", "label": "Verbose output", "type": "bool", "default": False},
+            ],
+            "py_deps": ["mutagen"],
+            "bin_deps": [],
+        },
+        {
             "id": "sort_by_artist",
             "label": "Sort Folders by Artist",
             "script": SCRIPTS_DIR / "sort_by_artist.py",
@@ -344,4 +391,3 @@ def get_tasks(settings: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     tasks = _builtin_tasks()
     tasks.extend(_collect_user_tasks(settings))
     return tasks
-

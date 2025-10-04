@@ -954,6 +954,35 @@ class AppWindow(QMainWindow):
                     widget.addItem(str(choice))
                 if default not in (None, ""):
                     widget.setCurrentText(str(default))
+            elif spec_type == "device":
+                widget = QComboBox()
+                widget.addItem("Auto-detect (single device)", "")
+                try:
+                    from rockbox_utils import list_rockbox_devices
+                    devices = list_rockbox_devices() or []
+                except Exception:
+                    devices = []
+                added_any = False
+                for dev in devices:
+                    try:
+                        mount = str(dev.get("mountpoint") or "").strip()
+                        if not mount:
+                            continue
+                        name = str(dev.get("name") or "").strip()
+                        display = str(dev.get("display_model") or dev.get("model") or "").strip()
+                        label = name or display or mount
+                        if display and display.lower() != label.lower():
+                            label = f"{label} ({display})"
+                        widget.addItem(f"{label} — {mount}", mount)
+                        added_any = True
+                    except Exception:
+                        continue
+                if not added_any:
+                    widget.addItem("No devices detected", "")
+                if default not in (None, ""):
+                    idx = widget.findData(str(default))
+                    if idx >= 0:
+                        widget.setCurrentIndex(idx)
             else:
                 widget = QLineEdit()
                 if default not in (None, ""):
@@ -991,6 +1020,9 @@ class AppWindow(QMainWindow):
                 values[key] = widget.value()
             elif spec_type == 'choice':
                 values[key] = widget.currentText()
+            elif spec_type == 'device':
+                data = widget.currentData()
+                values[key] = data if data is not None else widget.currentText()
             elif spec_type in ('textarea', 'multiline'):
                 values[key] = widget.toPlainText()
             else:

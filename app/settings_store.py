@@ -1,6 +1,10 @@
 import json
 from pathlib import Path
-from core import CONFIG_PATH, USER_SCRIPTS_DIR
+try:
+    from core import CONFIG_PATH, USER_SCRIPTS_DIR
+except ImportError:
+    from app.core import CONFIG_PATH, USER_SCRIPTS_DIR
+
 
 def _default_music_root() -> str:
     """Return a sensible cross-platform default Music folder.

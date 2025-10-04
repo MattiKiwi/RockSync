@@ -210,4 +210,5 @@ user_scripts/*
 !user_scripts/example_hello.py
 !user_scripts/example_hello.rocksync.json
 genre_checked.json
+notes.txt
 

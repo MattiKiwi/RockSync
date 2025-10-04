@@ -335,6 +335,10 @@ class DailyMixPane(QWidget):
         self.run_btn = QPushButton("Generate Mix")
         self.run_btn.clicked.connect(self._on_generate)
         act_row.addWidget(self.run_btn)
+        self.run_all_btn = QPushButton("Generate All Presets")
+        self.run_all_btn.setEnabled(False)
+        self.run_all_btn.clicked.connect(self._on_generate_all_presets)
+        act_row.addWidget(self.run_all_btn)
         self.status = QLineEdit(""); self.status.setReadOnly(True)
         act_row.addWidget(self.status, 1)
         auto_v.addLayout(act_row)
@@ -465,6 +469,12 @@ class DailyMixPane(QWidget):
             if isinstance(p, dict)
         ]
 
+        has_valid = False
+        for preset in self._genre_presets:
+            if (preset.get('name') or '').strip() and _parse_preset_genres_text(preset.get('genres', '')):
+                has_valid = True
+                break
+
         target = preferred if preferred is not None else str(self.controller.settings.get('daily_mix_last_preset', '') if hasattr(self.controller, 'settings') else '')
 
         self._loading_presets = True
@@ -484,6 +494,9 @@ class DailyMixPane(QWidget):
         self.genre_preset_combo.setCurrentIndex(index)
         self._loading_presets = False
         self._on_preset_changed()
+
+        if hasattr(self, 'run_all_btn'):
+            self.run_all_btn.setEnabled(has_valid)
 
     def _current_preset_name(self) -> str:
         data = self.genre_preset_combo.currentData()
@@ -971,19 +984,112 @@ class DailyMixPane(QWidget):
         base = Path(out_dir)
         base.mkdir(parents=True, exist_ok=True)
 
-        wrote = 0
-        for i in range(mix_count):
-            mix = self._build_mix(usable_tracks, anchors, total_min, per_artist_max, fresh_days)
-            if not mix:
-                break
-            mix_name = name if mix_count == 1 else f"{name} #{i+1}"
-            out = self._write_m3u8(base, mix_name, mix)
-            wrote += 1
-            self.status.setText(f"Wrote {out}")
+        wrote = self._generate_and_write_mixes(
+            usable_tracks=usable_tracks,
+            anchors=anchors,
+            mix_count=mix_count,
+            base_name=name,
+            out_dir=base,
+            total_minutes=total_min,
+            per_artist_max=per_artist_max,
+            fresh_days=fresh_days,
+        )
         if wrote == 0:
             QMessageBox.warning(self, "Daily Mix", "Could not build a mix. Try adjusting options.")
         else:
             QMessageBox.information(self, "Daily Mix", f"Created {wrote} playlist(s).")
+
+    def _on_generate_all_presets(self):
+        presets: List[Tuple[str, List[str]]] = []
+        for preset in self._genre_presets:
+            if not isinstance(preset, dict):
+                continue
+            name = str(preset.get('name', '')).strip()
+            allowed = _parse_preset_genres_text(preset.get('genres', ''))
+            if not name or not allowed:
+                continue
+            presets.append((name, allowed))
+
+        if not presets:
+            QMessageBox.warning(self, "Daily Mix", "No genre presets with genres are defined.")
+            return
+
+        out_dir = (self.out_dir.text() or '').strip()
+        if not out_dir:
+            QMessageBox.warning(self, "Daily Mix", "Please choose an output folder.")
+            return
+
+        tracks = self._load_tracks()
+        if not tracks:
+            QMessageBox.warning(self, "Daily Mix", "No tracks found in the index for the selected source.")
+            return
+
+        per_artist_max = self.per_artist_max.value()
+        fresh_days = self.fresh_days.value() or None
+        total_min = self.target_min.value()
+        mix_count = self.mix_count.value()
+        base = Path(out_dir)
+
+        available_genres = [g for g in self._genres if g]
+        total_wrote = 0
+        success_presets = 0
+        skipped: List[str] = []
+
+        for name, allowed_list in presets:
+            allowed_set = {g.strip().lower() for g in allowed_list if g.strip()}
+            if not allowed_set:
+                skipped.append(f"{name} (no valid genres)")
+                continue
+
+            filtered = self._filter_allowed_tracks(tracks, allowed_list)
+            if not filtered:
+                skipped.append(f"{name} (no matching tracks)")
+                continue
+
+            if available_genres and allowed_set:
+                preset_blacklist = [g for g in available_genres if g.strip().lower() not in allowed_set]
+            else:
+                preset_blacklist = []
+
+            usable_tracks = self._filter_blacklisted_tracks(filtered, preset_blacklist)
+            if not usable_tracks:
+                skipped.append(f"{name} (blacklist removed all tracks)")
+                continue
+
+            anchors = list(dict.fromkeys(allowed_list))
+            if not anchors:
+                skipped.append(f"{name} (no anchors)")
+                continue
+
+            wrote = self._generate_and_write_mixes(
+                usable_tracks=usable_tracks,
+                anchors=anchors,
+                mix_count=mix_count,
+                base_name=f"{name} - mix",
+                out_dir=base,
+                total_minutes=total_min,
+                per_artist_max=per_artist_max,
+                fresh_days=fresh_days,
+            )
+            if wrote == 0:
+                skipped.append(f"{name} (not enough distinct tracks)")
+                continue
+
+            total_wrote += wrote
+            success_presets += 1
+
+        if total_wrote == 0:
+            if skipped:
+                details = "\n".join(skipped)
+                QMessageBox.warning(self, "Daily Mix", f"No playlists were created.\nSkipped:\n{details}")
+            else:
+                QMessageBox.warning(self, "Daily Mix", "No playlists were created.")
+            return
+
+        message = f"Created {total_wrote} playlist(s) for {success_presets} preset(s)."
+        if skipped:
+            message += "\nSkipped: " + ", ".join(skipped)
+        QMessageBox.information(self, "Daily Mix", message)
 
     # ---------- Manual playlist ----------
     def _manual_insert_row(self, table: QTableWidget, info: Dict):
@@ -1151,6 +1257,29 @@ class DailyMixPane(QWidget):
             if len(out) >= 200:
                 break
         return out
+
+    def _generate_and_write_mixes(
+        self,
+        *,
+        usable_tracks: List[Dict],
+        anchors: List[str],
+        mix_count: int,
+        base_name: str,
+        out_dir: Path,
+        total_minutes: int,
+        per_artist_max: int,
+        fresh_days: Optional[int],
+    ) -> int:
+        wrote = 0
+        for i in range(max(1, mix_count)):
+            mix = self._build_mix(usable_tracks, anchors, total_minutes, per_artist_max, fresh_days)
+            if not mix:
+                break
+            mix_name = base_name if mix_count == 1 else f"{base_name} #{i+1}"
+            out = self._write_m3u8(out_dir, mix_name, mix)
+            wrote += 1
+            self.status.setText(f"Wrote {out}")
+        return wrote
 
     @staticmethod
     def _write_m3u8(out_dir: Path, name: str, rows: List[Dict]) -> Path:
