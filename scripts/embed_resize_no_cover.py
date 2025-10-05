@@ -37,8 +37,20 @@ DEFAULT_MAX_SIZE = 100
 SUPPORTED_EXTENSIONS = (".flac", ".mp3", ".m4a", ".mp4", ".ogg", ".opus", ".oga")
 
 
-def resize_with_aspect_ratio(image: Image.Image, max_size: int) -> Image.Image:
-    image.thumbnail((max_size, max_size), Image.LANCZOS)
+def center_crop_and_resize(image: Image.Image, target_size: int) -> Image.Image:
+    image = image.convert("RGB")
+    width, height = image.size
+    if width == 0 or height == 0:
+        raise ValueError("Cannot resize empty image")
+
+    crop_edge = min(width, height)
+    left = (width - crop_edge) // 2
+    top = (height - crop_edge) // 2
+    image = image.crop((left, top, left + crop_edge, top + crop_edge))
+
+    if image.size != (target_size, target_size):
+        image = image.resize((target_size, target_size), Image.LANCZOS)
+
     return image
 
 
@@ -82,7 +94,10 @@ def promote_flac(flac: FLAC, max_size: int) -> str:
     except Exception:
         return "no_image"
 
-    image = resize_with_aspect_ratio(image.convert("RGB"), max_size)
+    try:
+        image = center_crop_and_resize(image, max_size)
+    except Exception:
+        return "no_image"
     new_pic = Picture()
     new_pic.data = ensure_jpeg(image)
     new_pic.type = 3
@@ -139,7 +154,10 @@ def promote_mp3(path: str, max_size: int) -> str:
     except Exception:
         return "no_image"
 
-    image = resize_with_aspect_ratio(image.convert("RGB"), max_size)
+    try:
+        image = center_crop_and_resize(image, max_size)
+    except Exception:
+        return "no_image"
     target.data = ensure_jpeg(image)
     target.mime = "image/jpeg"
     target.type = 3
@@ -186,7 +204,10 @@ def promote_ogg(audio, max_size: int) -> str:
     except Exception:
         return "no_image"
 
-    image = resize_with_aspect_ratio(image.convert("RGB"), max_size)
+    try:
+        image = center_crop_and_resize(image, max_size)
+    except Exception:
+        return "no_image"
     new_pic = Picture()
     new_pic.data = ensure_jpeg(image)
     new_pic.type = 3

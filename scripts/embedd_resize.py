@@ -2,7 +2,7 @@ import argparse
 import base64
 import os
 from io import BytesIO
-from typing import Iterable, Tuple
+from typing import Iterable, Optional, Tuple
 
 from mutagen import File
 from mutagen.flac import FLAC, Picture
@@ -37,9 +37,30 @@ DEFAULT_TARGET_SIZE = (100, 100)
 SUPPORTED_EXTENSIONS = (".flac", ".mp3", ".m4a", ".mp4", ".ogg", ".opus", ".oga")
 
 
-def resize_image_exact(data: bytes, size: Tuple[int, int]) -> Tuple[bytes, Tuple[int, int]]:
-    image = Image.open(BytesIO(data)).convert("RGB")
-    image = image.resize(size, Image.LANCZOS)
+def resize_image_exact(data: bytes, size: Tuple[int, int]) -> Tuple[Optional[bytes], Tuple[int, int]]:
+    with Image.open(BytesIO(data)) as original:
+        width, height = original.size
+        if width == 0 or height == 0:
+            raise ValueError("Cannot resize empty image")
+
+        target_width, target_height = size
+        is_target_size = width == target_width and height == target_height
+        is_rgb_jpeg = (original.mode == "RGB") and (original.format or "").upper() == "JPEG"
+        if is_target_size and is_rgb_jpeg:
+            return None, (width, height)
+
+        image = original.convert("RGB")
+
+    width, height = image.size
+    # Crop to a centered square before scaling so Rockbox gets a consistent cover.
+    crop_edge = min(width, height)
+    left = (width - crop_edge) // 2
+    top = (height - crop_edge) // 2
+    image = image.crop((left, top, left + crop_edge, top + crop_edge))
+
+    if image.size != size:
+        image = image.resize(size, Image.LANCZOS)
+
     buffer = BytesIO()
     image.save(buffer, format="JPEG")
     return buffer.getvalue(), image.size
@@ -53,6 +74,10 @@ def handle_flac(flac: FLAC, size: Tuple[int, int]) -> bool:
             try:
                 resized, dimensions = resize_image_exact(picture.data, size)
             except Exception:
+                new_pictures.append(picture)
+                continue
+
+            if resized is None:
                 new_pictures.append(picture)
                 continue
 
@@ -94,6 +119,8 @@ def handle_mp3(path: str, size: Tuple[int, int]) -> bool:
                 resized, _ = resize_image_exact(frame.data, size)
             except Exception:
                 continue
+            if resized is None:
+                continue
             frame.data = resized
             frame.mime = "image/jpeg"
             frame.desc = "resized cover"
@@ -120,6 +147,9 @@ def handle_mp4(path: str, size: Tuple[int, int]) -> bool:
         try:
             resized, _ = resize_image_exact(bytes(cover), size)
         except Exception:
+            new_covers.append(cover)
+            continue
+        if resized is None:
             new_covers.append(cover)
             continue
         new_covers.append(MP4Cover(resized, imageformat=MP4Cover.FORMAT_JPEG))
@@ -154,6 +184,9 @@ def handle_ogg(audio, size: Tuple[int, int]) -> bool:
             try:
                 resized, dimensions = resize_image_exact(picture.data, size)
             except Exception:
+                new_entries.append(entry)
+                continue
+            if resized is None:
                 new_entries.append(entry)
                 continue
             new_pic = Picture()
