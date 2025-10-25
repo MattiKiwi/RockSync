@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rocksync"
+version = "0.1.0"
+description = "RockSync – Qt (PySide6) companion app for Rockbox devices"
+readme = "README.md"
+requires-python = "==3.12.0"
+dependencies = [
+    "PySide6>=6.7",
+    "pyqtdarktheme>=2.1",
+    "Pillow>=9.0",
+    "mutagen>=1.47",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "psutil>=5.9",
+    "musicbrainzngs>=0.7",
+    "lyricsgenius>=3.0",
+    "tqdm>=4.66",
+    "Send2Trash>=1.8",
+    "tidal-dl-ng>=0.26.3",
+    "yt-dlp>=2023.12",
+]
+
+[project.optional-dependencies]
+dev = ["pyinstaller>=6.0"]
+
+[tool.uv]
+dev-dependencies = ["pyinstaller>=6.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*"]

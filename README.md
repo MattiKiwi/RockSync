@@ -8,19 +8,19 @@ Important: Prebuilt packages are currently not working. Please clone the latest 
 Recommended steps
 
 - Install system prerequisites:
-  - Python 3.9+ (with `pip`)
+  - Python 3.9+ (works with 3.9 through 3.12 tested)
   - ffmpeg and ffprobe (for conversions/downsampling)
 - Clone and enter the repo:
   - `git clone https://github.com/MattiKiwi/RockSync.git`
   - `cd RockSync`
-- (Optional) Create and activate a virtualenv.
+- (Optional) Create and activate a virtualenv (skip if you plan to use `uv` which manages `.venv` automatically).
 - Install Python dependencies:
-  - Core: `pip install PySide6 pyqtdarktheme mutagen Pillow requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm Send2Trash`
-  - Optional (only if you enable tabs below):
-    - YouTube: `pip install yt-dlp`
-    - TIDAL: `pip install tidal-dl-ng`
+  - With [uv](https://docs.astral.sh/uv/) (recommended): `uv sync` from the repo root. Add `--extra youtube` and/or `--extra tidal` if you plan to enable those tabs.
+  - With pip: `pip install PySide6 pyqtdarktheme Pillow mutagen requests beautifulsoup4 psutil musicbrainzngs lyricsgenius tqdm Send2Trash`
+    - YouTube tab (optional): `pip install yt-dlp`
+    - TIDAL tab (optional): `pip install tidal-dl-ng`
 - Run the app from the repo root:
-  - `python app/main.py`
+  - `uv run python app/main.py` (or `python app/main.py` if you are managing the environment yourself)
 
 First run: create the Library DB
 
@@ -58,7 +58,7 @@ Settings keys in `app/settings.json`:
   - Optional FLAC downsample on device to 16‑bit/44.1 kHz (requires `ffmpeg/ffprobe`)
 - Rockbox Tools: Detect devices, manage `.cfg` under `/.rockbox`, browse/install themes from themes.rockbox.org per target.
 - Tasks (Advanced): Run helper scripts below with arguments via a simple form; see output inline.
-- Themes: Switch between bundled UI themes under `app/themes` or use system default.
+- Themes: Switch between system default, PyQtDarkTheme (dark/light/auto), or bundled CSS themes under `app/themes`.
 - YouTube: Browse YouTube (search, playlists, Watch Later, Liked, Home) and download via yt‑dlp with cookies support. See “YouTube (Browse + Download)” below.
 
 ## First Run & Usage
@@ -77,6 +77,7 @@ Settings keys in `app/settings.json`:
 - YouTube: `yt-dlp`
 - Metadata & tagging: `mutagen`
 - Images (previews, resizing): `Pillow`
+- Qt theme presets: `pyqtdarktheme` (ships Dark/Light/Auto choices in the Theme switcher)
 - Rockbox detection: `psutil`
 - Themes browser/installer: `requests`, `beautifulsoup4`, `tqdm` (optional for CLI progress)
 - Lyrics (optional online): `lyricsgenius`

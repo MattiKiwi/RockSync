@@ -69,8 +69,11 @@ def resize_image_exact(data: bytes, size: Tuple[int, int]) -> Tuple[Optional[byt
 def handle_flac(flac: FLAC, size: Tuple[int, int]) -> bool:
     updated = False
     new_pictures = []
+    cover_found = False
+
     for picture in flac.pictures:
         if picture.type == 3:
+            cover_found = True
             try:
                 resized, dimensions = resize_image_exact(picture.data, size)
             except Exception:
@@ -93,6 +96,36 @@ def handle_flac(flac: FLAC, size: Tuple[int, int]) -> bool:
         else:
             new_pictures.append(picture)
 
+    if not cover_found and flac.pictures:
+        candidate_index = None
+        for idx, picture in enumerate(flac.pictures):
+            if candidate_index is None or flac.pictures[candidate_index].type != 0:
+                candidate_index = idx
+            if picture.type == 0:
+                candidate_index = idx
+                break
+
+        if candidate_index is not None:
+            candidate = flac.pictures[candidate_index]
+            try:
+                resized, dimensions = resize_image_exact(candidate.data, size)
+            except Exception:
+                pass
+            else:
+                data = candidate.data if resized is None else resized
+                promoted = Picture()
+                promoted.data = data
+                promoted.type = 3
+                promoted.mime = "image/jpeg"
+                promoted.width, promoted.height = dimensions
+                promoted.depth = 24
+                promoted.desc = "resized promoted cover"
+                if new_pictures:
+                    new_pictures[candidate_index] = promoted
+                else:
+                    new_pictures.append(promoted)
+                updated = True
+
     if updated:
         flac.clear_pictures()
         for pic in new_pictures:
@@ -112,9 +145,15 @@ def handle_mp3(path: str, size: Tuple[int, int]) -> bool:
         except (ID3NoHeaderError, Exception):  # pragma: no cover
             return False
 
+    frames = list(audio.tags.getall("APIC"))
+    if not frames:
+        return False
+
     updated = False
-    for frame in list(audio.tags.getall("APIC")):
-        if getattr(frame, "type", 3) == 3:
+    cover_frames = [frame for frame in frames if getattr(frame, "type", 3) == 3]
+
+    if cover_frames:
+        for frame in cover_frames:
             try:
                 resized, _ = resize_image_exact(frame.data, size)
             except Exception:
@@ -126,6 +165,27 @@ def handle_mp3(path: str, size: Tuple[int, int]) -> bool:
             frame.desc = "resized cover"
             frame.type = 3
             updated = True
+    else:
+        target = None
+        for frame in frames:
+            if target is None or getattr(target, "type", 255) != 0:
+                target = frame
+            if getattr(frame, "type", 255) == 0:
+                target = frame
+                break
+
+        if target is not None:
+            try:
+                resized, _ = resize_image_exact(target.data, size)
+            except Exception:
+                pass
+            else:
+                data = target.data if resized is None else resized
+                target.data = data
+                target.mime = "image/jpeg"
+                target.type = 3
+                target.desc = "resized promoted cover"
+                updated = True
 
     if updated:
         audio.save()
@@ -176,18 +236,21 @@ def handle_ogg(audio, size: Tuple[int, int]) -> bool:
     if not pictures:
         return False
 
-    new_entries = []
+    decoded = [_decode_picture(entry) for entry in pictures]
+    new_pictures = []
     updated = False
-    for entry in pictures:
-        picture = _decode_picture(entry)
+    cover_found = False
+
+    for picture in decoded:
         if picture.type == 3:
+            cover_found = True
             try:
                 resized, dimensions = resize_image_exact(picture.data, size)
             except Exception:
-                new_entries.append(entry)
+                new_pictures.append(picture)
                 continue
             if resized is None:
-                new_entries.append(entry)
+                new_pictures.append(picture)
                 continue
             new_pic = Picture()
             new_pic.data = resized
@@ -196,13 +259,45 @@ def handle_ogg(audio, size: Tuple[int, int]) -> bool:
             new_pic.width, new_pic.height = dimensions
             new_pic.depth = 24
             new_pic.desc = "resized cover"
-            new_entries.append(_encode_picture(new_pic))
+            new_pictures.append(new_pic)
             updated = True
         else:
-            new_entries.append(entry)
+            new_pictures.append(picture)
+
+    if not cover_found:
+        candidate_index = None
+        for idx, picture in enumerate(decoded):
+            if candidate_index is None or decoded[candidate_index].type != 0:
+                candidate_index = idx
+            if picture.type == 0:
+                candidate_index = idx
+                break
+
+        if candidate_index is not None:
+            candidate = decoded[candidate_index]
+            try:
+                resized, dimensions = resize_image_exact(candidate.data, size)
+            except Exception:
+                pass
+            else:
+                data = candidate.data if resized is None else resized
+                new_pic = Picture()
+                new_pic.data = data
+                new_pic.type = 3
+                new_pic.mime = "image/jpeg"
+                new_pic.width, new_pic.height = dimensions
+                new_pic.depth = 24
+                new_pic.desc = "resized promoted cover"
+                if new_pictures:
+                    new_pictures[candidate_index] = new_pic
+                else:
+                    new_pictures.append(new_pic)
+                updated = True
 
     if updated:
-        audio.tags["metadata_block_picture"] = new_entries
+        audio.tags["metadata_block_picture"] = [
+            _encode_picture(picture) for picture in new_pictures
+        ]
         audio.save()
     return updated
 

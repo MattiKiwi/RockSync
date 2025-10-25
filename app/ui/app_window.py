@@ -26,8 +26,7 @@ from ui.tidal_pane import TidalPane
 from ui.youtube_pane import YouTubePane
 from ui.rockbox_pane import RockboxPane
 from ui.genre_pane import GenreTaggerPane
-from theme import apply_theme
-from theme_loader import list_theme_files
+from theme import apply_theme, available_themes
 
 
 class AppWindow(QMainWindow):
@@ -106,7 +105,7 @@ class AppWindow(QMainWindow):
         top_h.addStretch(1)
         
         # Quick theme switcher
-        theme_options = ['system'] + list_theme_files()
+        theme_options = available_themes()
         if 'theme_file' not in self.settings and 'theme' in self.settings:
             self.settings['theme_file'] = self.settings['theme']
         self.quick_theme_box = QComboBox()
@@ -586,7 +585,7 @@ class AppWindow(QMainWindow):
         v.addWidget(self.advanced_group)
 
         # Theme selector (also mirrored in top bar)
-        theme_options = ['system'] + list_theme_files()
+        theme_options = available_themes()
         if 'theme_file' not in self.settings and 'theme' in self.settings:
             self.settings['theme_file'] = self.settings['theme']
         self.theme_box = QComboBox(); self.theme_box.addItems(theme_options); self.theme_box.setCurrentText(self.settings.get('theme_file', 'system'))

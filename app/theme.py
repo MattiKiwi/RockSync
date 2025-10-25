@@ -2,9 +2,19 @@ from theme_loader import list_theme_files, parse_css_palette, THEMES_DIR
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import QApplication
 
+try:
+    import qdarktheme
+except Exception:  # pragma: no cover - optional dep should never hard-crash
+    qdarktheme = None
+
+QDARKTHEME_CHOICES = ("qdarktheme-auto", "qdarktheme-dark", "qdarktheme-light")
+
 
 def available_themes():
-    return ["system"] + list_theme_files()
+    base = ["system"]
+    if qdarktheme is not None:
+        base.extend(QDARKTHEME_CHOICES)
+    return base + list_theme_files()
 
 
 def _color(hex_str: str) -> QColor:
@@ -18,6 +28,13 @@ def apply_theme(app: QApplication, theme_spec: str):
     """Apply a Material-You-inspired theme using QPalette + QSS.
     Accepts both the previous palette keys and new Material tokens from CSS :root.
     """
+    if theme_spec in QDARKTHEME_CHOICES and qdarktheme is not None:
+        mode = theme_spec.split("-", 1)[-1]
+        stylesheet = qdarktheme.setup_theme(theme=mode)
+        if stylesheet:
+            app.setStyleSheet(stylesheet)
+        return {"theme": theme_spec}
+
     # Baseline palette (Material-ish light)
     palette = {
         # Legacy keys
